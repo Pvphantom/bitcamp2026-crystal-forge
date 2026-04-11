@@ -1,69 +1,70 @@
-# String Breaker ⚛️
+# Crystal Forge
 
-A real-time quantum simulation game where you break the energy string between quarks by tuning physics parameters — built on the (1+1)D Schwinger model.
+This repository is being rebuilt from the backup Schwinger demo into the Hubbard-model project described in the current Bitcamp spec.
 
-## What is this?
+The architecture is now:
 
-In particle physics, quarks are confined — you can never pull one out of a proton because the energy "string" between them grows until it snaps, creating new particles from empty space. This game lets you see that happen in real time using a genuine quantum simulation.
+- `backend/`: Python FastAPI service for Hubbard physics, observables, ML inference, and future Minecraft integration.
+- `frontend/`: React + Vite client for rapid iteration on controls and visualization.
+- `docs/`: specs and architecture notes.
 
-## Quick Start
+## Current Status
+
+The repo has been restructured, but the backend physics stack is still scaffolded rather than fully implemented. The old Schwinger frontend remains in `frontend/` temporarily until the Hubbard UI replaces it.
+
+## Layout
+
+```text
+.
+├── backend/
+│   ├── app/
+│   │   ├── api/
+│   │   ├── core/
+│   │   ├── domain/
+│   │   ├── ml/
+│   │   ├── physics/
+│   │   ├── services/
+│   │   └── main.py
+│   ├── scripts/
+│   ├── tests/
+│   └── pyproject.toml
+├── docs/
+│   ├── architecture.md
+│   └── specs/
+├── frontend/
+│   ├── src/
+│   ├── package.json
+│   └── vite.config.js
+└── README.md
+```
+
+## Near-Term Build Order
+
+1. Implement `backend/app/physics/hamiltonian.py`.
+2. Add the 4 acceptance tests from the Hubbard spec.
+3. Add exact diagonalization and core observables.
+4. Expose them through FastAPI.
+5. Replace the current frontend with a Hubbard lattice/material editor.
+6. Add classifier training and inference after the physics core is trusted.
+
+## Frontend
 
 ```bash
+cd frontend
 npm install
 npm run dev
 ```
 
-Open `http://localhost:5173` in your browser.
+## Backend
 
-## How to Play
-
-1. **Level Select** — work through 6 challenge levels or try Free Play
-2. **Hit Play** — watch the quantum simulation evolve in real time  
-3. **Drag sliders** — adjust string strength, particle weight, and background field
-4. **Break the string** — when the inner charges hit the threshold, you win
-5. **Earn stars** — faster breaks = more stars
-
-## Tech Stack
-
-- **Frontend**: React + Vite
-- **Simulation**: Pure JavaScript implementation of the lattice Schwinger model
-  - Kogut–Susskind staggered fermions
-  - Jordan–Wigner transformation to qubits
-  - Gauss's law elimination of gauge field
-  - 6-site lattice → 64-dimensional Hilbert space
-  - Exact time evolution via matrix exponential
-- **Backend** (optional, in `backend/`): Python + Qiskit + FastAPI for hardware-ready quantum circuits
-
-## Project Structure
-
-```
-string-breaker/
-├── index.html          # Entry point
-├── src/
-│   ├── main.jsx        # React mount
-│   ├── App.jsx         # Game + simulation engine
-│   └── index.css       # Global styles
-├── backend/            # Python quantum backend
-│   ├── hamiltonian.py  # Hamiltonian builder (SparsePauliOp)
-│   ├── observables.py  # State prep + measurement
-│   ├── evolution.py    # Trotterized time evolution
-│   ├── vqe.py          # Variational quantum eigensolver
-│   ├── game_state.py   # Core game state class
-│   └── server.py       # FastAPI server
-├── package.json
-└── vite.config.js
+```bash
+cd backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+uvicorn app.main:app --reload
 ```
 
-## The Physics
+## Minecraft Direction
 
-The Schwinger model is quantum electrodynamics in 1+1 dimensions — the simplest gauge theory that exhibits **confinement** (particles can't be separated) and **string breaking** (the vacuum produces new particle-antiparticle pairs when the energy string gets too taut).
-
-We simulate it by:
-1. Discretizing space onto a 6-site lattice with staggered fermions
-2. Mapping fermions to qubits via the Jordan–Wigner transformation
-3. Eliminating the gauge field using Gauss's law
-4. Evolving the 64-dimensional state vector under the exact Hamiltonian
-
-The result is a real quantum simulation running in your browser — every number you see is computed from the actual wavefunction.
-
-## Bitcamp 2026 — Quantum Track
+The backend is the long-term product core. The browser UI and any future Minecraft visualization should both consume the same backend state/export schema rather than each embedding simulation logic.
