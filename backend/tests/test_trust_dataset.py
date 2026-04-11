@@ -21,7 +21,7 @@ def test_trust_feature_vector_shape_is_stable() -> None:
         iterations=12,
         converged=True,
     )
-    assert features.shape == (17,)
+    assert features.shape == (20,)
 
 
 def test_trust_oracle_labels_are_well_formed() -> None:

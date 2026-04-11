@@ -5,7 +5,7 @@ from torch import nn
 
 
 class TrustMLP(nn.Module):
-    def __init__(self, input_dim: int = 17, hidden_dim: int = 64, num_classes: int = 3) -> None:
+    def __init__(self, input_dim: int = 20, hidden_dim: int = 64, num_classes: int = 3) -> None:
         super().__init__()
         self.backbone = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),

@@ -78,6 +78,24 @@ const PAGE_GUIDE = [
   },
 ];
 
+const PIPELINE_STEPS = [
+  {
+    step: "Step 1",
+    title: "Identify the regime",
+    body: "The classifier gives a fast physical summary of what kind of state you prepared.",
+  },
+  {
+    step: "Step 2",
+    title: "Check solver trust",
+    body: "CorrMap asks whether a cheap approximation is reliable or whether strong correlations demand a stronger solver.",
+  },
+  {
+    step: "Step 3",
+    title: "Plan the measurements",
+    body: "QProbe finds the cheapest safe way to extract the signals you care about once you decide what solver path to trust.",
+  },
+];
+
 const OCCUPANCY_ORDER = ["empty", "up", "down", "double"];
 const QPROBE_TARGETS = ["D", "n", "Ms2", "K", "Cs_max"];
 const DEMO_PRESETS = {
@@ -394,6 +412,23 @@ export default function App() {
             : 0,
       }
     : null;
+  const workflowSummary = state && trustResult
+    ? {
+        regime: state.phase.label,
+        solver:
+          trustResult.recommended_action === "cheap_solver_ok"
+            ? "Cheap solver is probably enough"
+            : trustResult.recommended_action === "check_exact_or_stronger_solver"
+              ? "Cross-check with a stronger solver"
+              : "Escalate to exact / advanced physics",
+        measurement:
+          qprobeResult == null
+            ? "Run QProbe to choose a measurement plan"
+            : qprobeResult.success
+              ? `QProbe found a cheaper safe plan (${qprobeResult.measurement_savings} groups saved)`
+              : "QProbe says no safe shortcut under this budget",
+      }
+    : null;
 
   if (loading) {
     return (
@@ -433,6 +468,16 @@ export default function App() {
       <section className="guide-grid">
         {PAGE_GUIDE.map((entry) => (
           <article key={entry.title} className="guide-card">
+            <strong>{entry.title}</strong>
+            <span>{entry.body}</span>
+          </article>
+        ))}
+      </section>
+
+      <section className="pipeline-grid">
+        {PIPELINE_STEPS.map((entry) => (
+          <article key={entry.step} className="pipeline-card">
+            <span className="eyebrow">{entry.step}</span>
             <strong>{entry.title}</strong>
             <span>{entry.body}</span>
           </article>
@@ -501,6 +546,29 @@ export default function App() {
               ? ` QProbe then decides whether the stronger path can still be measured cheaply.`
               : ""}
           </span>
+        </section>
+      ) : null}
+
+      {workflowSummary ? (
+        <section className="workflow-card">
+          <div>
+            <p className="eyebrow">Unified Recommendation</p>
+            <h2>One workflow, not three separate tools</h2>
+          </div>
+          <div className="workflow-grid">
+            <div className="workflow-item">
+              <span>Regime</span>
+              <strong>{workflowSummary.regime}</strong>
+            </div>
+            <div className="workflow-item">
+              <span>Solver decision</span>
+              <strong>{workflowSummary.solver}</strong>
+            </div>
+            <div className="workflow-item">
+              <span>Measurement decision</span>
+              <strong>{workflowSummary.measurement}</strong>
+            </div>
+          </div>
         </section>
       ) : null}
 
@@ -685,8 +753,8 @@ export default function App() {
         <article className="panel phase-panel">
           <div className="panel-head">
             <div>
-              <p className="eyebrow">Phase Output</p>
-              <h2>State summary</h2>
+              <p className="eyebrow">Step 1</p>
+              <h2>Identify the regime</h2>
             </div>
           </div>
 
@@ -732,8 +800,8 @@ export default function App() {
         <article className="panel metrics-panel">
           <div className="panel-head">
             <div>
-              <p className="eyebrow">CorrMap</p>
-              <h2>Can I trust the cheap solver?</h2>
+              <p className="eyebrow">Step 2</p>
+              <h2>Check solver trust with CorrMap</h2>
             </div>
           </div>
           <p className="panel-note panel-note-tight">
@@ -741,6 +809,15 @@ export default function App() {
             it against exact physics on small clusters and learns where that shortcut
             is safe or risky.
           </p>
+          <div className="scope-box">
+            <strong>Current scope</strong>
+            <span>
+              This CorrMap prototype is currently calibrated on <code>2x2</code> Hubbard
+              plaquettes, using mean-field as the cheap solver and exact ED as the
+              reference. The framework underneath is being generalized so later versions
+              can cover larger lattices and additional 2D lattice models.
+            </span>
+          </div>
           {trustResult ? (
             <>
               <div className={`qprobe-banner ${trustResult.risk_label === "safe" ? "qprobe-success" : "qprobe-failure"}`}>
@@ -811,7 +888,10 @@ export default function App() {
               TrustNet benchmark: test risk accuracy{" "}
               {trustMetrics.test_risk_accuracy != null ? `${(trustMetrics.test_risk_accuracy * 100).toFixed(0)}%` : "N/A"}
               {" "}· false-safe rate{" "}
-              {trustMetrics.test_false_safe_rate != null ? `${(trustMetrics.test_false_safe_rate * 100).toFixed(0)}%` : "N/A"}.
+              {trustMetrics.test_false_safe_rate != null ? `${(trustMetrics.test_false_safe_rate * 100).toFixed(0)}%` : "N/A"}
+              {trustMetrics.cross_lattice_risk_accuracy != null
+                ? ` · 2x2→2x3 transfer ${(trustMetrics.cross_lattice_risk_accuracy * 100).toFixed(0)}%`
+                : ""}.
             </p>
           ) : null}
         </article>
@@ -819,8 +899,8 @@ export default function App() {
         <article className="panel qprobe-panel">
           <div className="panel-head">
             <div>
-              <p className="eyebrow">QProbe</p>
-              <h2>Smarter measurement planning</h2>
+              <p className="eyebrow">Step 3</p>
+              <h2>Plan the measurements with QProbe</h2>
             </div>
           </div>
           <p className="panel-note panel-note-tight">
@@ -1083,7 +1163,7 @@ export default function App() {
           {adaptiveQprobeResult ? (
             <>
               <div className={`qprobe-banner ${adaptiveQprobeResult.success ? "qprobe-success" : "qprobe-failure"}`}>
-                <strong>{adaptiveQprobeResult.success ? "Adaptive QProbe stopped early" : "Adaptive QProbe could not stop safely"}</strong>
+                <strong>{adaptiveQprobeResult.success ? "Adaptive QProbe stopped in runtime mode" : "Adaptive QProbe could not stop in runtime mode"}</strong>
                 <span>{adaptiveQprobeResult.message}</span>
               </div>
               <div className="metric-grid">
@@ -1099,7 +1179,18 @@ export default function App() {
                   <span>Max uncertainty</span>
                   <strong>{adaptiveQprobeResult.max_uncertainty.toFixed(4)}</strong>
                 </div>
+                <div className="metric-card">
+                  <span>Oracle benchmark max error</span>
+                  <strong>{adaptiveQprobeResult.max_abs_error.toFixed(4)}</strong>
+                </div>
+                <div className="metric-card">
+                  <span>Oracle benchmark check</span>
+                  <strong>{adaptiveQprobeResult.oracle_benchmark_within_tolerance ? "Within tolerance" : "Outside tolerance"}</strong>
+                </div>
               </div>
+              <p className="panel-note panel-note-tight">
+                Runtime stop rule: {adaptiveQprobeResult.runtime_stop_rule}. The runtime policy only uses target coverage and measurement uncertainty. The exact benchmark error is shown here only to validate the policy on small solvable systems.
+              </p>
               <div className="qprobe-table">
                 {adaptiveQprobeResult.steps.map((step) => (
                   <div key={step.step_index} className="adaptive-step">
@@ -1111,8 +1202,10 @@ export default function App() {
                     <div className="adaptive-step-body">
                       <span>{step.chosen_group.explanation}</span>
                       <span>supports {step.chosen_group.supports_targets.map((target) => TARGET_LABELS[target] ?? target).join(", ")}</span>
-                      <span>max error {step.max_abs_error.toFixed(4)}</span>
-                      <span>max uncertainty {step.max_uncertainty.toFixed(4)}</span>
+                      <span>covered {step.covered_targets.map((target) => TARGET_LABELS[target] ?? target).join(", ") || "none yet"}</span>
+                      <span>remaining {step.unresolved_targets.map((target) => TARGET_LABELS[target] ?? target).join(", ") || "none"}</span>
+                      <span>runtime uncertainty {step.max_uncertainty.toFixed(4)}</span>
+                      <span>oracle benchmark error {step.max_abs_error.toFixed(4)}</span>
                     </div>
                   </div>
                 ))}

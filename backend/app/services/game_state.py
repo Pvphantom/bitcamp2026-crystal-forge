@@ -302,6 +302,7 @@ class HubbardGameStateService:
             success=result.success,
             targets=list(result.target_observables),
             tolerance=result.tolerance,
+            runtime_stop_rule=result.runtime_stop_rule,
             full_cost=result.full_plan.cost,
             final_cost=result.final_plan.cost,
             measurement_savings=result.full_plan.cost - result.final_plan.cost,
@@ -310,8 +311,9 @@ class HubbardGameStateService:
             abs_error=result.abs_error,
             max_abs_error=result.max_abs_error,
             max_uncertainty=result.max_uncertainty,
+            oracle_benchmark_within_tolerance=result.oracle_benchmark_within_tolerance,
             steps=[self._adaptive_step_response(step) for step in result.steps],
-            message=f"{result.message} {explain_stop_reason(result.success, result.max_abs_error, result.max_uncertainty, result.tolerance)}",
+            message=f"{result.message} {explain_stop_reason(result.success, result.max_uncertainty, result.tolerance)}",
         )
 
     def export_state(self) -> ExportStateResponse:
@@ -479,6 +481,9 @@ class HubbardGameStateService:
             staggered_linear += ((-1) ** (x + y)) * (n_up[idx] - n_dn[idx]) / self.problem_spec.nsites
         return np.array(
             [
+                float(self.problem_spec.Lx),
+                float(self.problem_spec.Ly),
+                float(self.problem_spec.nsites),
                 self.problem_spec.t,
                 self.problem_spec.U,
                 self.problem_spec.mu,
@@ -540,6 +545,8 @@ class HubbardGameStateService:
             step_index=step.step_index,
             chosen_group=self._measurement_group_response(step.chosen_group),
             current_cost=step.plan.cost,
+            covered_targets=list(step.covered_targets),
+            unresolved_targets=list(step.unresolved_targets),
             estimated=step.estimated,
             exact=step.exact,
             abs_error=step.abs_error,

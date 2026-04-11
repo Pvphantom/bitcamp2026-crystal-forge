@@ -289,6 +289,8 @@ class TrustMetricsReader:
             "test_error_mae": payload.get("test", {}).get("error_mae"),
             "test_false_safe_rate": payload.get("test", {}).get("false_safe_rate"),
             "confusion_matrix": payload.get("test", {}).get("confusion_matrix", []),
+            "cross_lattice_risk_accuracy": payload.get("cross_lattice", {}).get("risk_accuracy"),
+            "cross_lattice_false_safe_rate": payload.get("cross_lattice", {}).get("false_safe_rate"),
         }
 
 

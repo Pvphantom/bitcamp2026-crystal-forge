@@ -12,8 +12,16 @@ from app.solvers.exact_ed import ExactEDSolver
 from app.solvers.mean_field import MeanFieldSolver
 
 
-U_VALUES = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0]
-MU_VALUES = [-2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+GRIDS = {
+    (2, 2): {
+        "U": [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0],
+        "mu": [-2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+    },
+    (2, 3): {
+        "U": [0.0, 2.0, 4.0, 8.0, 10.0],
+        "mu": [0.0, 2.0, 4.0, 5.0],
+    },
+}
 
 
 def build_trust_feature_vector(
@@ -37,6 +45,9 @@ def build_trust_feature_vector(
         staggered_linear += ((-1) ** (x + y)) * (n_up[idx] - n_dn[idx]) / problem.nsites
     return torch.tensor(
         [
+            float(problem.Lx),
+            float(problem.Ly),
+            float(problem.nsites),
             problem.t,
             problem.U,
             problem.mu,
@@ -70,33 +81,37 @@ def main() -> None:
 
     dataset = []
     sample_id = 0
-    for U in U_VALUES:
-        for mu in MU_VALUES:
-            problem = ProblemSpec.hubbard(Lx=2, Ly=2, t=1.0, U=U, mu=mu)
-            exact = exact_solver.solve(problem)
-            approx = mean_field_solver.solve(problem)
-            comparison = compare_solver_results(problem, exact, approx)
-            sample_id += 1
-            dataset.append(
-                {
-                    "features": build_trust_feature_vector(
-                        problem=problem,
-                        mean_field_globals=approx.global_observables,
-                        mean_field_sites=approx.site_observables,
-                        iterations=int(approx.metadata["iterations"]),
-                        converged=bool(approx.metadata["converged"]),
-                    ),
-                    "risk_label": comparison.risk_label,
-                    "max_abs_error": comparison.max_abs_error,
-                    "energy_error": comparison.energy_error,
-                    "metadata": {
-                        "id": sample_id,
-                        "t": problem.t,
-                        "U": problem.U,
-                        "mu": problem.mu,
-                    },
-                }
-            )
+    for (Lx, Ly), grid in GRIDS.items():
+        for U in grid["U"]:
+            for mu in grid["mu"]:
+                problem = ProblemSpec.hubbard(Lx=Lx, Ly=Ly, t=1.0, U=U, mu=mu)
+                exact = exact_solver.solve(problem)
+                approx = mean_field_solver.solve(problem)
+                comparison = compare_solver_results(problem, exact, approx)
+                sample_id += 1
+                dataset.append(
+                    {
+                        "features": build_trust_feature_vector(
+                            problem=problem,
+                            mean_field_globals=approx.global_observables,
+                            mean_field_sites=approx.site_observables,
+                            iterations=int(approx.metadata["iterations"]),
+                            converged=bool(approx.metadata["converged"]),
+                        ),
+                        "risk_label": comparison.risk_label,
+                        "max_abs_error": comparison.max_abs_error,
+                        "energy_error": comparison.energy_error,
+                        "metadata": {
+                            "id": sample_id,
+                            "Lx": Lx,
+                            "Ly": Ly,
+                            "nsites": problem.nsites,
+                            "t": problem.t,
+                            "U": problem.U,
+                            "mu": problem.mu,
+                        },
+                    }
+                )
 
     torch.save(dataset, args.output)
     print(f"saved {len(dataset)} TrustNet samples to {args.output}")

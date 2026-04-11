@@ -116,29 +116,14 @@ def select_safe_guards(model: TrustMLP, loader: DataLoader) -> tuple[float, floa
     return best_error, best_prob
 
 
-def train(
+def fit_model(
     *,
-    dataset_path: Path,
-    model_out: Path,
-    metrics_out: Path,
+    train_samples: list[dict],
+    val_samples: list[dict],
     epochs: int,
     batch_size: int,
     learning_rate: float,
-) -> dict[str, object]:
-    samples = torch.load(dataset_path, map_location="cpu")
-    train_samples, test_samples = train_test_split(
-        samples,
-        test_size=0.2,
-        random_state=19,
-        stratify=stratify_keys(samples),
-    )
-    train_samples, val_samples = train_test_split(
-        train_samples,
-        test_size=0.25,
-        random_state=29,
-        stratify=stratify_keys(train_samples),
-    )
-
+) -> tuple[TrustMLP, torch.Tensor, torch.Tensor, float, float]:
     train_features, _, _ = collate(train_samples)
     feature_mean = train_features.mean(dim=0)
     feature_std = train_features.std(dim=0).clamp_min(1e-6)
@@ -146,22 +131,20 @@ def train(
     def normalize(samples: list[dict]) -> list[dict]:
         return [{**sample, "features": (sample["features"] - feature_mean) / feature_std} for sample in samples]
 
-    train_samples = normalize(train_samples)
-    val_samples = normalize(val_samples)
-    test_samples = normalize(test_samples)
+    train_norm = normalize(train_samples)
+    val_norm = normalize(val_samples)
 
-    train_loader = make_loader(train_samples, batch_size=batch_size, shuffle=True)
-    val_loader = make_loader(val_samples, batch_size=batch_size, shuffle=False)
-    test_loader = make_loader(test_samples, batch_size=batch_size, shuffle=False)
+    train_loader = make_loader(train_norm, batch_size=batch_size, shuffle=True)
+    val_loader = make_loader(val_norm, batch_size=batch_size, shuffle=False)
 
-    class_counts = Counter(sample["risk_label"] for sample in train_samples)
+    class_counts = Counter(sample["risk_label"] for sample in train_norm)
     class_weights = torch.tensor(
         [1.0 / class_counts.get(label, 1) for label in TRUST_LABELS],
         dtype=torch.float32,
     )
     class_weights = class_weights / class_weights.sum() * len(TRUST_LABELS)
 
-    model = TrustMLP(input_dim=17, hidden_dim=64, num_classes=len(TRUST_LABELS))
+    model = TrustMLP(input_dim=20, hidden_dim=64, num_classes=len(TRUST_LABELS))
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     risk_loss = nn.CrossEntropyLoss(weight=class_weights)
     error_loss = nn.L1Loss()
@@ -197,9 +180,50 @@ def train(
 
     assert best_state is not None
     model.load_state_dict(best_state)
+    return model, feature_mean, feature_std, best_error_guard, best_prob_guard
 
-    safe_error_guard = best_error_guard
-    safe_prob_guard = best_prob_guard
+
+def train(
+    *,
+    dataset_path: Path,
+    model_out: Path,
+    metrics_out: Path,
+    epochs: int,
+    batch_size: int,
+    learning_rate: float,
+) -> dict[str, object]:
+    samples = torch.load(dataset_path, map_location="cpu")
+    train_samples, test_samples = train_test_split(
+        samples,
+        test_size=0.2,
+        random_state=19,
+        stratify=stratify_keys(samples),
+    )
+    train_samples, val_samples = train_test_split(
+        train_samples,
+        test_size=0.25,
+        random_state=29,
+        stratify=stratify_keys(train_samples),
+    )
+
+    def normalize(samples: list[dict]) -> list[dict]:
+        return [{**sample, "features": (sample["features"] - feature_mean) / feature_std} for sample in samples]
+    model, feature_mean, feature_std, safe_error_guard, safe_prob_guard = fit_model(
+        train_samples=train_samples,
+        val_samples=val_samples,
+        epochs=epochs,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+    )
+
+    train_samples = normalize(train_samples)
+    val_samples = normalize(val_samples)
+    test_samples = normalize(test_samples)
+
+    train_loader = make_loader(train_samples, batch_size=batch_size, shuffle=True)
+    val_loader = make_loader(val_samples, batch_size=batch_size, shuffle=False)
+    test_loader = make_loader(test_samples, batch_size=batch_size, shuffle=False)
+
     metrics = {
         "train": evaluate(model, train_loader, safe_error_guard=safe_error_guard, safe_prob_guard=safe_prob_guard),
         "val": evaluate(model, val_loader, safe_error_guard=safe_error_guard, safe_prob_guard=safe_prob_guard),
@@ -216,7 +240,7 @@ def train(
     torch.save(
         {
             "model_state": {key: value.cpu() for key, value in model.state_dict().items()},
-            "model_config": {"input_dim": 17, "hidden_dim": 64, "num_classes": len(TRUST_LABELS)},
+            "model_config": {"input_dim": 20, "hidden_dim": 64, "num_classes": len(TRUST_LABELS)},
             "labels": TRUST_LABELS,
             "feature_mean": feature_mean,
             "feature_std": feature_std,
@@ -225,6 +249,37 @@ def train(
         },
         model_out,
     )
+    two_by_two = [sample for sample in samples if sample["metadata"]["nsites"] == 4]
+    two_by_three = [sample for sample in samples if sample["metadata"]["nsites"] == 6]
+    if two_by_two and two_by_three:
+        train_2x2_raw, val_2x2_raw = train_test_split(
+            two_by_two,
+            test_size=0.2,
+            random_state=41,
+            stratify=stratify_keys(two_by_two),
+        )
+        cross_model, cross_mean, cross_std, cross_error_guard, cross_prob_guard = fit_model(
+            train_samples=train_2x2_raw,
+            val_samples=val_2x2_raw,
+            epochs=epochs,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
+        )
+        test_2x3 = [{**sample, "features": (sample["features"] - cross_mean) / cross_std} for sample in two_by_three]
+        cross_loader = make_loader(test_2x3, batch_size=batch_size, shuffle=False)
+        cross_metrics = evaluate(
+            cross_model,
+            cross_loader,
+            safe_error_guard=cross_error_guard,
+            safe_prob_guard=cross_prob_guard,
+        )
+        metrics["cross_lattice"] = {
+            "train_lattice": "2x2",
+            "test_lattice": "2x3",
+            **cross_metrics,
+            "num_train_samples": len(train_2x2_raw),
+            "num_test_samples": len(test_2x3),
+        }
     metrics_out.write_text(json.dumps(metrics, indent=2))
     return metrics
 

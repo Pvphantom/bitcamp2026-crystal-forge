@@ -140,14 +140,11 @@ def build_measurement_library(Lx: int, Ly: int, t: float) -> dict[str, list[Meas
     }
 
 
-def explain_stop_reason(success: bool, max_abs_error: float, max_uncertainty: float, tolerance: float) -> str:
+def explain_stop_reason(success: bool, max_uncertainty: float, tolerance: float) -> str:
     if success:
         return (
-            "Stopped because both the reconstruction error and the uncertainty "
-            "fell below the requested tolerance."
+            "Runtime stop was triggered because the covered targets had uncertainty below the requested tolerance."
         )
-    if max_abs_error > tolerance and max_uncertainty > tolerance:
-        return "Did not stop early because both error and uncertainty stayed too large."
-    if max_abs_error > tolerance:
-        return "Did not stop early because the recovered signals were still too far from the exact targets."
-    return "Did not stop early because the uncertainty stayed too large to trust the current plan."
+    if max_uncertainty > tolerance:
+        return "Runtime did not stop early because the uncertainty stayed too large to trust the current plan."
+    return "Runtime did not stop early because not all requested targets were covered by the chosen groups."

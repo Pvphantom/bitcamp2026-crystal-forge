@@ -47,6 +47,8 @@ class AdaptiveMeasurementStep:
     step_index: int
     chosen_group: MeasurementGroup
     plan: MeasurementPlan
+    covered_targets: tuple[str, ...]
+    unresolved_targets: tuple[str, ...]
     estimated: dict[str, float]
     exact: dict[str, float]
     abs_error: dict[str, float]
@@ -63,11 +65,13 @@ class AdaptiveMeasurementPlanResult:
     full_plan: MeasurementPlan
     final_plan: MeasurementPlan
     steps: tuple[AdaptiveMeasurementStep, ...]
+    runtime_stop_rule: str
     exact: dict[str, float]
     estimated: dict[str, float]
     abs_error: dict[str, float]
     max_abs_error: float
     max_uncertainty: float
+    oracle_benchmark_within_tolerance: bool
     message: str
 
 
@@ -98,6 +102,24 @@ def _merged_groups_for_targets(
             )
         )
     return merged
+
+
+def _group_support_map(
+    merged_groups: list[MeasurementGroup],
+    measurement_library: dict[str, list[MeasurementGroup]],
+    target_observables: tuple[str, ...],
+) -> dict[str, set[str]]:
+    target_terms = {
+        observable: {term.pauli for group in measurement_library[observable] for term in group.terms}
+        for observable in target_observables
+    }
+    support = {}
+    for group in merged_groups:
+        group_terms = {term.pauli for term in group.terms}
+        support[group.name] = {
+            observable for observable, paulis in target_terms.items() if group_terms & paulis
+        }
+    return support
 
 
 def _evaluate_plan(
@@ -163,6 +185,50 @@ def _estimate_uncertainty(
         for name, values in estimates_per_observable.items()
     }
     return uncertainty, max(uncertainty.values()) if uncertainty else 0.0
+
+
+def _covered_and_unresolved_targets(
+    selected: list[MeasurementGroup],
+    support_map: dict[str, set[str]],
+    target_observables: tuple[str, ...],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    covered = set().union(*(support_map[group.name] for group in selected)) if selected else set()
+    unresolved = tuple(name for name in target_observables if name not in covered)
+    return tuple(name for name in target_observables if name in covered), unresolved
+
+
+def evaluate_adaptive_measurement_plan_oracle(
+    *,
+    state: np.ndarray,
+    plan: MeasurementPlan,
+    measurement_library: dict[str, list[MeasurementGroup]],
+    target_observables: tuple[str, ...],
+    shots_per_group: int,
+    noise_model: NoiseModel,
+    seed: int | None,
+    bootstrap_reps: int = 5,
+) -> tuple[dict[str, float], dict[str, float], dict[str, float], float, dict[str, float], float]:
+    estimated, exact, abs_error = _evaluate_plan(
+        state,
+        plan,
+        measurement_library,
+        target_observables,
+        shots_per_group=shots_per_group,
+        noise_model=noise_model,
+        seed=seed,
+    )
+    uncertainty, max_uncertainty = _estimate_uncertainty(
+        state,
+        plan,
+        measurement_library,
+        target_observables,
+        shots_per_group=shots_per_group,
+        noise_model=noise_model,
+        seed=seed,
+        bootstrap_reps=bootstrap_reps,
+    )
+    max_abs_error = max(abs_error.values()) if abs_error else 0.0
+    return estimated, exact, abs_error, max_abs_error, uncertainty, max_uncertainty
 
 
 def _exact_pauli_expectation(state: np.ndarray, pauli: str) -> float:
@@ -261,6 +327,7 @@ def search_adaptive_measurement_plan(
 ) -> AdaptiveMeasurementPlanResult:
     measurement_library = build_measurement_library(Lx, Ly, t)
     merged_groups = _merged_groups_for_targets(measurement_library, target_observables)
+    support_map = _group_support_map(merged_groups, measurement_library, target_observables)
     full_plan = MeasurementPlan(groups=tuple(merged_groups))
     noise = noise_model or NoiseModel()
 
@@ -274,44 +341,42 @@ def search_adaptive_measurement_plan(
     final_max_uncertainty = float("inf")
 
     while remaining:
-        candidate_results = []
-        for candidate in remaining:
-            plan = MeasurementPlan(groups=tuple([*selected, candidate]))
-            estimated, exact, abs_error = _evaluate_plan(
-                state,
-                plan,
-                measurement_library,
-                target_observables,
+        _, unresolved_targets = _covered_and_unresolved_targets(selected, support_map, target_observables)
+        unresolved = set(unresolved_targets)
+        remaining.sort(
+            key=lambda group: (
+                -len(support_map[group.name] & unresolved),
+                -group.num_terms,
+                group.basis,
+            )
+        )
+        chosen_group = remaining[0]
+        remaining.remove(chosen_group)
+        selected.append(chosen_group)
+        plan = MeasurementPlan(groups=tuple(selected))
+        estimated, exact, abs_error, max_abs_error, uncertainty, max_uncertainty = (
+            evaluate_adaptive_measurement_plan_oracle(
+                state=state,
+                plan=plan,
+                measurement_library=measurement_library,
+                target_observables=target_observables,
                 shots_per_group=shots_per_group,
                 noise_model=noise,
                 seed=seed,
-            )
-            candidate_results.append((candidate, plan, estimated, exact, abs_error))
-        candidate_results.sort(
-            key=lambda item: (
-                max(item[4].values()),
-                item[1].cost,
-                item[0].basis,
+                bootstrap_reps=bootstrap_reps,
             )
         )
-        chosen_group, plan, estimated, exact, abs_error = candidate_results[0]
-        remaining.remove(chosen_group)
-        selected.append(chosen_group)
-        uncertainty, max_uncertainty = _estimate_uncertainty(
-            state,
-            plan,
-            measurement_library,
+        covered_targets, unresolved_targets = _covered_and_unresolved_targets(
+            selected,
+            support_map,
             target_observables,
-            shots_per_group=shots_per_group,
-            noise_model=noise,
-            seed=seed,
-            bootstrap_reps=bootstrap_reps,
         )
-        max_abs_error = max(abs_error.values()) if abs_error else 0.0
         step = AdaptiveMeasurementStep(
             step_index=len(selected),
             chosen_group=chosen_group,
             plan=plan,
+            covered_targets=covered_targets,
+            unresolved_targets=unresolved_targets,
             estimated=estimated,
             exact=exact,
             abs_error=abs_error,
@@ -323,7 +388,12 @@ def search_adaptive_measurement_plan(
         final_estimated, final_exact, final_errors = estimated, exact, abs_error
         final_max_error = max_abs_error
         final_max_uncertainty = max_uncertainty
-        if max_abs_error <= tolerance and max_uncertainty <= tolerance:
+        runtime_confidence_bound = max_uncertainty + noise.readout_flip_prob
+        if (
+            not unresolved_targets
+            and runtime_confidence_bound <= tolerance
+            and len(selected) < len(merged_groups)
+        ):
             return AdaptiveMeasurementPlanResult(
                 success=True,
                 target_observables=target_observables,
@@ -331,12 +401,14 @@ def search_adaptive_measurement_plan(
                 full_plan=full_plan,
                 final_plan=plan,
                 steps=tuple(steps),
+                runtime_stop_rule="coverage+uncertainty+noise-floor",
                 exact=final_exact,
                 estimated=final_estimated,
                 abs_error=final_errors,
                 max_abs_error=final_max_error,
                 max_uncertainty=final_max_uncertainty,
-                message="Adaptive QProbe stopped early once both error and uncertainty were within tolerance.",
+                oracle_benchmark_within_tolerance=final_max_error <= tolerance,
+                message="Adaptive QProbe stopped after it had covered all requested targets and the runtime uncertainty plus known readout-noise floor was below tolerance.",
             )
 
     return AdaptiveMeasurementPlanResult(
@@ -346,10 +418,12 @@ def search_adaptive_measurement_plan(
         full_plan=full_plan,
         final_plan=MeasurementPlan(groups=tuple(selected)),
         steps=tuple(steps),
+        runtime_stop_rule="coverage+uncertainty+noise-floor",
         exact=final_exact,
         estimated=final_estimated,
         abs_error=final_errors,
         max_abs_error=final_max_error,
         max_uncertainty=final_max_uncertainty,
-        message="Adaptive QProbe used every measurement group and still could not certify the requested tolerance.",
+        oracle_benchmark_within_tolerance=final_max_error <= tolerance,
+        message="Adaptive QProbe used every available measurement group before it could make a cost-saving runtime stop.",
     )

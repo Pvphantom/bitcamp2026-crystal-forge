@@ -112,6 +112,8 @@ class TrustMetricsResponse(BaseModel):
     test_error_mae: float | None = None
     test_false_safe_rate: float | None = None
     confusion_matrix: list[list[int]] = Field(default_factory=list)
+    cross_lattice_risk_accuracy: float | None = None
+    cross_lattice_false_safe_rate: float | None = None
 
 
 class TrustComparisonResponse(BaseModel):
@@ -179,6 +181,8 @@ class AdaptiveMeasurementStepResponse(BaseModel):
     step_index: int
     chosen_group: MeasurementGroupResponse
     current_cost: int
+    covered_targets: list[str]
+    unresolved_targets: list[str]
     estimated: dict[str, float]
     exact: dict[str, float]
     abs_error: dict[str, float]
@@ -191,6 +195,7 @@ class AdaptiveMeasurementPlanResponse(BaseModel):
     success: bool
     targets: list[str]
     tolerance: float
+    runtime_stop_rule: str
     full_cost: int
     final_cost: int
     measurement_savings: int
@@ -199,6 +204,7 @@ class AdaptiveMeasurementPlanResponse(BaseModel):
     abs_error: dict[str, float]
     max_abs_error: float
     max_uncertainty: float
+    oracle_benchmark_within_tolerance: bool
     steps: list[AdaptiveMeasurementStepResponse]
     message: str
 
