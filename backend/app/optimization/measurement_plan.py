@@ -7,8 +7,14 @@ from itertools import combinations
 
 import numpy as np
 
+from app.domain.problem_spec import ProblemSpec
+from app.observables.registry import ObservableRegistry, build_default_observable_registry
 from app.physics.measurement_eval import NoiseModel, evaluate_measurement_groups
-from app.physics.measurements import MeasurementGroup, build_measurement_library
+from app.physics.measurements import (
+    MeasurementGroup,
+    build_measurement_library,
+    build_measurement_library_for_problem,
+)
 
 
 @dataclass(frozen=True)
@@ -312,6 +318,83 @@ def search_minimal_measurement_plan(
     )
 
 
+def search_minimal_measurement_plan_for_problem(
+    *,
+    problem: ProblemSpec,
+    state: np.ndarray,
+    target_observables: tuple[str, ...],
+    tolerance: float,
+    shots_per_group: int,
+    noise_model: NoiseModel | None = None,
+    seed: int | None = None,
+    registry: ObservableRegistry | None = None,
+) -> MeasurementPlanResult:
+    measurement_library = build_measurement_library_for_problem(
+        problem,
+        registry=registry or build_default_observable_registry(),
+    )
+    merged_groups = _merged_groups_for_targets(measurement_library, target_observables)
+    full_plan = MeasurementPlan(groups=tuple(merged_groups))
+    noise = noise_model or NoiseModel()
+
+    best_plan = full_plan
+    best_estimated, best_exact, best_errors = _evaluate_plan(
+        state,
+        full_plan,
+        measurement_library,
+        target_observables,
+        shots_per_group=shots_per_group,
+        noise_model=noise,
+        seed=seed,
+    )
+    best_max_error = max(best_errors.values()) if best_errors else 0.0
+
+    for subset_size in range(1, len(merged_groups) + 1):
+        passing_candidates: list[tuple[MeasurementPlan, dict[str, float], dict[str, float], dict[str, float]]] = []
+        for subset in combinations(merged_groups, subset_size):
+            plan = MeasurementPlan(groups=tuple(subset))
+            estimated, exact, abs_error = _evaluate_plan(
+                state,
+                plan,
+                measurement_library,
+                target_observables,
+                shots_per_group=shots_per_group,
+                noise_model=noise,
+                seed=seed,
+            )
+            if max(abs_error.values()) <= tolerance:
+                passing_candidates.append((plan, estimated, exact, abs_error))
+        if passing_candidates:
+            passing_candidates.sort(key=lambda item: (item[0].cost, max(item[3].values()), item[0].group_names))
+            best_plan, best_estimated, best_exact, best_errors = passing_candidates[0]
+            best_max_error = max(best_errors.values()) if best_errors else 0.0
+            return MeasurementPlanResult(
+                success=True,
+                target_observables=target_observables,
+                tolerance=tolerance,
+                full_plan=full_plan,
+                recommended_plan=best_plan,
+                exact=best_exact,
+                estimated=best_estimated,
+                abs_error=best_errors,
+                max_abs_error=best_max_error,
+                message="Found a compressed measurement plan within tolerance.",
+            )
+
+    return MeasurementPlanResult(
+        success=False,
+        target_observables=target_observables,
+        tolerance=tolerance,
+        full_plan=full_plan,
+        recommended_plan=full_plan,
+        exact=best_exact,
+        estimated=best_estimated,
+        abs_error=best_errors,
+        max_abs_error=best_max_error,
+        message="No compressed plan met the requested tolerance; returning the full plan.",
+    )
+
+
 def search_adaptive_measurement_plan(
     *,
     Lx: int,
@@ -326,6 +409,125 @@ def search_adaptive_measurement_plan(
     bootstrap_reps: int = 5,
 ) -> AdaptiveMeasurementPlanResult:
     measurement_library = build_measurement_library(Lx, Ly, t)
+    merged_groups = _merged_groups_for_targets(measurement_library, target_observables)
+    support_map = _group_support_map(merged_groups, measurement_library, target_observables)
+    full_plan = MeasurementPlan(groups=tuple(merged_groups))
+    noise = noise_model or NoiseModel()
+
+    selected: list[MeasurementGroup] = []
+    remaining = list(merged_groups)
+    steps: list[AdaptiveMeasurementStep] = []
+    final_estimated: dict[str, float] = {}
+    final_exact: dict[str, float] = {}
+    final_errors: dict[str, float] = {}
+    final_max_error = float("inf")
+    final_max_uncertainty = float("inf")
+
+    while remaining:
+        _, unresolved_targets = _covered_and_unresolved_targets(selected, support_map, target_observables)
+        unresolved = set(unresolved_targets)
+        remaining.sort(
+            key=lambda group: (
+                -len(support_map[group.name] & unresolved),
+                -group.num_terms,
+                group.basis,
+            )
+        )
+        chosen_group = remaining[0]
+        remaining.remove(chosen_group)
+        selected.append(chosen_group)
+        plan = MeasurementPlan(groups=tuple(selected))
+        estimated, exact, abs_error, max_abs_error, uncertainty, max_uncertainty = (
+            evaluate_adaptive_measurement_plan_oracle(
+                state=state,
+                plan=plan,
+                measurement_library=measurement_library,
+                target_observables=target_observables,
+                shots_per_group=shots_per_group,
+                noise_model=noise,
+                seed=seed,
+                bootstrap_reps=bootstrap_reps,
+            )
+        )
+        covered_targets, unresolved_targets = _covered_and_unresolved_targets(
+            selected,
+            support_map,
+            target_observables,
+        )
+        step = AdaptiveMeasurementStep(
+            step_index=len(selected),
+            chosen_group=chosen_group,
+            plan=plan,
+            covered_targets=covered_targets,
+            unresolved_targets=unresolved_targets,
+            estimated=estimated,
+            exact=exact,
+            abs_error=abs_error,
+            max_abs_error=max_abs_error,
+            uncertainty=uncertainty,
+            max_uncertainty=max_uncertainty,
+        )
+        steps.append(step)
+        final_estimated, final_exact, final_errors = estimated, exact, abs_error
+        final_max_error = max_abs_error
+        final_max_uncertainty = max_uncertainty
+        runtime_confidence_bound = max_uncertainty + noise.readout_flip_prob
+        if (
+            not unresolved_targets
+            and runtime_confidence_bound <= tolerance
+            and len(selected) < len(merged_groups)
+        ):
+            return AdaptiveMeasurementPlanResult(
+                success=True,
+                target_observables=target_observables,
+                tolerance=tolerance,
+                full_plan=full_plan,
+                final_plan=plan,
+                steps=tuple(steps),
+                runtime_stop_rule="coverage+uncertainty+noise-floor",
+                exact=final_exact,
+                estimated=final_estimated,
+                abs_error=final_errors,
+                max_abs_error=final_max_error,
+                max_uncertainty=final_max_uncertainty,
+                oracle_benchmark_within_tolerance=final_max_error <= tolerance,
+                message="Adaptive QProbe stopped after it had covered all requested targets and the runtime uncertainty plus known readout-noise floor was below tolerance.",
+            )
+
+    return AdaptiveMeasurementPlanResult(
+        success=False,
+        target_observables=target_observables,
+        tolerance=tolerance,
+        full_plan=full_plan,
+        final_plan=MeasurementPlan(groups=tuple(selected)),
+        steps=tuple(steps),
+        runtime_stop_rule="coverage+uncertainty+noise-floor",
+        exact=final_exact,
+        estimated=final_estimated,
+        abs_error=final_errors,
+        max_abs_error=final_max_error,
+        max_uncertainty=final_max_uncertainty,
+        oracle_benchmark_within_tolerance=final_max_error <= tolerance,
+        message="Adaptive QProbe used every available measurement group before it could make a cost-saving runtime stop.",
+    )
+
+
+def search_adaptive_measurement_plan_for_problem(
+    *,
+    problem: ProblemSpec,
+    state: np.ndarray,
+    target_observables: tuple[str, ...],
+    tolerance: float,
+    shots_per_group: int,
+    noise_model: NoiseModel | None = None,
+    seed: int | None = None,
+    bootstrap_reps: int = 5,
+    registry: ObservableRegistry | None = None,
+) -> AdaptiveMeasurementPlanResult:
+    measurement_library = build_measurement_library_for_problem(
+        problem,
+        registry=registry or build_default_observable_registry(),
+    )
     merged_groups = _merged_groups_for_targets(measurement_library, target_observables)
     support_map = _group_support_map(merged_groups, measurement_library, target_observables)
     full_plan = MeasurementPlan(groups=tuple(merged_groups))

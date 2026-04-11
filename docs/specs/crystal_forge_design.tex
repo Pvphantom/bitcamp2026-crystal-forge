@@ -1,0 +1,1558 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{float}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  urlcolor=blue!50!black,
+  citecolor=blue!50!black
+}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  columns=fullflexible
+}
+
+\title{Crystal Forge Design Document\\
+\large A Solver-Aware and Measurement-Aware Framework for Small-Lattice Correlated Quantum Models}
+\author{Bitcamp 2026 Project Design Spec}
+\date{April 11, 2026}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+\section{Executive Summary}
+
+Crystal Forge is a full-stack system for studying small two-dimensional lattice many-body models. The backend currently supports two concrete model families:
+
+\begin{itemize}
+\item the spinful Fermi-Hubbard model,
+\item the transverse-field Ising model (TFIM).
+\end{itemize}
+
+The project began as a small-lattice exact simulation engine and evolved into a more general decision framework with three tightly connected functions:
+
+\begin{enumerate}[label=\arabic*.]
+\item \textbf{Regime identification}: classify the physical regime of a solved lattice configuration.
+\item \textbf{Solver trust estimation}: determine whether a cheap approximation is trustworthy or whether stronger correlated methods are needed.
+\item \textbf{Measurement planning}: determine the cheapest set of measurement settings needed to recover selected diagnostics under shot noise and readout noise.
+\end{enumerate}
+
+In its current form, the backend now supports a fourth critical layer for the TFIM family:
+
+\begin{enumerate}[label=\arabic*.]
+\setcounter{enumi}{3}
+\item \textbf{Quantum escalation}: when CorrMap says the cheap solver is unsafe and a strong quantum solver is registered, the workflow escalates to a variational quantum eigensolver (VQE), and QProbe is applied specifically to the quantum path.
+\end{enumerate}
+
+The core design principle is that \emph{exactly solvable small lattices are calibration systems, not the final runtime engine}. Exact diagonalization is used to:
+
+\begin{itemize}
+\item validate Hamiltonian construction and observable definitions,
+\item generate oracle-quality training labels,
+\item benchmark approximate solvers,
+\item benchmark scalable measurement policies.
+\end{itemize}
+
+The long-term target is not ``solve only \(2\times 2\) plaquettes.'' The target is a framework in which:
+
+\begin{itemize}
+\item small solvable systems provide ground-truth supervision,
+\item larger systems are handled by scalable approximations and learned trust layers,
+\item measurement planning is executed using policies that do not require oracle knowledge at runtime.
+\end{itemize}
+
+This document describes the complete project in first-principles detail: the physics formulation, qubit mapping, observables, exact and mean-field solvers, phase classifier, QProbe, Adaptive QProbe, CorrMap, multi-family trust training, generic workflow analysis, API, and frontend interaction model.
+
+\subsection{Plain-English statement of purpose}
+
+For a non-specialist, the product can be summarized as follows:
+
+\begin{quote}
+Crystal Forge decides whether a fast approximation is good enough, whether a stronger quantum method is needed, and how to measure that stronger method as cheaply as possible.
+\end{quote}
+
+This is the simplest correct way to understand the project. Every panel in the frontend is there to help answer one of those three questions.
+
+\section{Project Goals and Design Constraints}
+
+\subsection{Goals}
+
+The project is designed to satisfy the following goals:
+
+\begin{enumerate}[label=\arabic*.]
+\item \textbf{Physics correctness first}: every layer depends on a correct Hamiltonian and correct observables.
+\item \textbf{Exact-oracle benchmarking}: small solvable systems must be used to audit every approximation.
+\item \textbf{Scalable runtime logic}: learned trust and measurement-planning logic must depend only on data available for larger systems.
+\item \textbf{Framework shape rather than single-demo shape}: the software must be organized as a problem-specification layer, solver layer, observable layer, and decision layer.
+\item \textbf{Human-usable frontend}: the user interface must be legible to non-specialists while still exposing the underlying scientific structure.
+\end{enumerate}
+
+\subsection{Constraints}
+
+The current implementation deliberately works on small lattices, principally \(2\times 2\) and selected \(2\times 3\) cases. This is not a bug. It is a design choice because:
+
+\begin{itemize}
+\item full exact diagonalization scales exponentially in the Hilbert space dimension,
+\item the role of the exact solver is calibration and benchmarking,
+\item the scalable components are the mean-field baseline, the trust predictor, and the runtime measurement policy.
+\end{itemize}
+
+\section{Repository and System Layout}
+
+The repository is divided into:
+
+\begin{itemize}
+\item \verb|backend/|: Python FastAPI service, physics, solvers, ML, optimization.
+\item \verb|frontend/|: React + Vite user interface.
+\item \verb|docs/|: architecture notes and specifications.
+\end{itemize}
+
+The backend follows a layered design:
+
+\begin{itemize}
+\item \verb|app/domain/|: problem and API data models.
+\item \verb|app/physics/|: Hamiltonians, observables, exact linear algebra, state prep, measurement primitives.
+\item \verb|app/solvers/|: exact and approximate solver interfaces.
+\item \verb|app/analysis/|: exact-vs-approx comparison.
+\item \verb|app/ml/|: learned models and inference helpers.
+\item \verb|app/optimization/|: exact and adaptive measurement planning.
+\item \verb|app/services/|: orchestration layer consumed by the HTTP API.
+\item \verb|app/api/|: FastAPI routes.
+\end{itemize}
+
+\section{Problem Specification Layer}
+
+\subsection{Motivation}
+
+The first architectural refactor introduced a generic \verb|ProblemSpec| abstraction. The purpose is to avoid hard-coding every downstream component to one ad hoc Hubbard-specific state blob.
+
+\subsection{Data structures}
+
+The problem layer is implemented in \verb|backend/app/domain/problem_spec.py| and defines:
+
+\begin{itemize}
+\item \verb|LatticeSpec|: \((L_x, L_y)\), boundary condition, number of sites, number of qubits.
+\item \verb|ParameterSpec|: a dictionary-like collection of model parameters.
+\item \verb|ProblemSpec|: model family, lattice, parameters, and metadata.
+\end{itemize}
+
+For Hubbard, the convenience constructor is:
+\[
+\texttt{ProblemSpec.hubbard}(L_x, L_y, t, U, \mu).
+\]
+
+For TFIM, the convenience constructor is:
+\[
+\texttt{ProblemSpec.tfim}(L_x, L_y, J, h, g),
+\]
+where \(J\) is the Ising coupling, \(h\) is the transverse field, and \(g\) is an optional longitudinal field.
+
+\subsection{Reason for this abstraction}
+
+This layer is critical because it separates:
+
+\begin{itemize}
+\item the \emph{mathematical problem} being solved,
+\item the \emph{solver} used,
+\item the \emph{observables} extracted,
+\item the \emph{trust and measurement decisions} made after solving.
+\end{itemize}
+
+That split is what allows the project to evolve from ``a \(2\times 2\) Hubbard demo'' into a more general framework.
+
+\section{Fermi-Hubbard Model from First Principles}
+
+\subsection{Second-quantized Hamiltonian}
+
+The spinful Fermi-Hubbard Hamiltonian on a graph \(G=(V,E)\) is
+\begin{equation}
+H
+=
+-t \sum_{\langle i,j \rangle \in E} \sum_{\sigma \in \{\uparrow,\downarrow\}}
+\left(c_{i\sigma}^\dagger c_{j\sigma} + c_{j\sigma}^\dagger c_{i\sigma}\right)
++
+U \sum_i n_{i\uparrow} n_{i\downarrow}
+- \mu \sum_i \left(n_{i\uparrow}+n_{i\downarrow}\right),
+\label{eq:hubbard}
+\end{equation}
+where
+\[
+n_{i\sigma} = c_{i\sigma}^\dagger c_{i\sigma}.
+\]
+
+The three physical pieces are:
+
+\begin{itemize}
+\item \textbf{Hopping}: the kinetic term, governed by \(t\).
+\item \textbf{On-site repulsion}: the interaction term, governed by \(U\).
+\item \textbf{Chemical potential}: the filling control, governed by \(\mu\).
+\end{itemize}
+
+\subsection{Lattice geometry}
+
+The current project uses open-boundary rectangular lattices. The site index convention is
+\begin{equation}
+i(x,y) = x + L_x y,
+\end{equation}
+implemented by \verb|site_index(x, y, Lx)| in \verb|lattice.py|.
+
+Nearest-neighbor bonds are open-boundary horizontal and vertical edges:
+\[
+\langle i,j \rangle \in E
+\quad\Longleftrightarrow\quad
+j = i+1 \text{ in } x \text{ direction or } j=i+L_x \text{ in } y \text{ direction}.
+\]
+
+\subsection{Spin-major qubit ordering}
+
+The project uses a \emph{spin-major} qubit ordering:
+\begin{equation}
+q(i,\uparrow)=i,
+\qquad
+q(i,\downarrow)=N_s+i,
+\qquad
+N_s = L_x L_y.
+\end{equation}
+
+This matters because Jordan-Wigner strings depend on the ordering of fermionic modes. An incorrect permutation after mapping would preserve occupancies but break the fermionic string structure. The implemented fix is to permute the \emph{fermionic operator indices first}, then apply the Jordan-Wigner map.
+
+\section{Jordan-Wigner Mapping and Sign Conventions}
+
+\subsection{Why the sign conventions matter}
+
+The exact Hamiltonian builder was explicitly audited against a hand-derived manual builder because sign mistakes in the hopping term are common in Jordan-Wigner implementations. In particular, the project enforces:
+
+\begin{itemize}
+\item the physical hopping term in Eq.~\eqref{eq:hubbard} has coefficient \(-t\),
+\item the mapped Hermitian hopping pair contributes \(-t/2\) to each Pauli string in the manual builder,
+\item the project uses Qiskit little-endian Pauli-string conventions, so string assembly reverses the qubit list with \verb|[::-1]|.
+\end{itemize}
+
+\subsection{Jordan-Wigner derivation}
+
+For ordered fermionic modes \(0,1,\dots,N_q-1\), the Jordan-Wigner map is
+\begin{equation}
+c_k
+
+=
+\left(\prod_{\ell<k} Z_\ell\right)\frac{X_k + iY_k}{2},
+\qquad
+c_k^\dagger
+=
+\left(\prod_{\ell<k} Z_\ell\right)\frac{X_k - iY_k}{2}.
+\end{equation}
+
+For \(p<q\),
+\begin{equation}
+c_p^\dagger c_q + c_q^\dagger c_p
+=
+\frac{1}{2}\left(
+X_p Z_{p+1}\cdots Z_{q-1} X_q
++
+Y_p Z_{p+1}\cdots Z_{q-1} Y_q
+\right).
+\end{equation}
+
+Therefore the physical term
+\[
+-t \left(c_p^\dagger c_q + c_q^\dagger c_p\right)
+\]
+maps to
+\begin{equation}
+-\frac{t}{2}\left(
+X_p Z_{p+1}\cdots Z_{q-1} X_q
++
+Y_p Z_{p+1}\cdots Z_{q-1} Y_q
+\right).
+\end{equation}
+
+That coefficient is exactly what appears in the manual builder in \verb|backend/app/physics/hamiltonian.py|.
+
+\subsection{Implemented Hamiltonian builders}
+
+The repository contains two Hamiltonian constructors:
+
+\begin{enumerate}[label=\arabic*.]
+\item \textbf{Primary builder}: \verb|build_hamiltonian| uses \verb|qiskit_nature| with a fermionic index permutation into spin-major order before Jordan-Wigner mapping.
+\item \textbf{Manual cross-check builder}: \verb|build_hamiltonian_manual| explicitly builds the Pauli strings with the correct \(-t/2\) hopping coefficients, \(U\)-term expansion, and chemical-potential term.
+\end{enumerate}
+
+\subsection{Number operators}
+
+For a single qubit \(q\),
+\begin{equation}
+n_q = \frac{1-Z_q}{2}.
+\end{equation}
+
+The spin-resolved and total number operators are built as
+\[
+N_\uparrow = \sum_i n_{q(i,\uparrow)},
+\qquad
+N_\downarrow = \sum_i n_{q(i,\downarrow)},
+\qquad
+N = N_\uparrow + N_\downarrow.
+\]
+
+\section{Observable Derivations}
+
+\subsection{Site occupancies}
+
+The project defines per-site occupation operators
+\[
+n_{i\uparrow},\qquad n_{i\downarrow},
+\]
+and from them:
+
+\begin{equation}
+D_i = n_{i\uparrow} n_{i\downarrow},
+\qquad
+S_i^z = \frac{n_{i\uparrow}-n_{i\downarrow}}{2}.
+\end{equation}
+
+\subsection{Average double occupancy}
+
+The global double occupancy observable is
+\begin{equation}
+D = \frac{1}{N_s}\sum_{i=1}^{N_s} n_{i\uparrow}n_{i\downarrow}.
+\end{equation}
+
+\subsection{Average filling}
+
+The average filling is
+\begin{equation}
+n = \frac{1}{N_s}\sum_i \left(n_{i\uparrow}+n_{i\downarrow}\right).
+\end{equation}
+
+\subsection{Staggered magnetization squared}
+
+The project defines the staggered density difference
+\begin{equation}
+M_s = \frac{1}{N_s}\sum_i (-1)^{x_i+y_i}\left(n_{i\uparrow}-n_{i\downarrow}\right).
+\end{equation}
+Then the stored observable is
+\begin{equation}
+M_s^2 = M_s^2.
+\end{equation}
+
+This definition intentionally uses \(n_{i\uparrow}-n_{i\downarrow}\), not \(S_i^z\), because that is the convention enforced in the project tests and was corrected after an earlier normalization mismatch.
+
+\subsection{Kinetic observable}
+
+The kinetic observable is defined from the hopping operator, normalized by the number of bonds:
+\begin{equation}
+K =
+-\frac{t}{|E|}
+\sum_{\langle i,j\rangle,\sigma}
+\frac{1}{2}
+\left(
+X_{i\sigma} Z\cdots X_{j\sigma}
++
+Y_{i\sigma} Z\cdots Y_{j\sigma}
+\right).
+\end{equation}
+
+\subsection{Long-distance spin correlator}
+
+The observable \(\mathrm{Cs\_max}\) is the longest-distance \(S^zS^z\) correlator available on the current lattice:
+\begin{equation}
+C_{s,\max} =
+S_0^z S_{N_s-1}^z,
+\end{equation}
+or the corresponding direct pair if it is present in the bond operator table.
+
+\subsection{Direct statevector extraction}
+
+For diagonal site observables, the project also includes a direct basis-probability extractor. If
+\[
+\vert \psi \rangle = \sum_b \psi_b \vert b \rangle,
+\qquad
+p_b = |\psi_b|^2,
+\]
+then, for example,
+\begin{equation}
+\langle n_{i\uparrow}\rangle = \sum_b p_b\, \nu_{i\uparrow}(b),
+\qquad
+\langle D_i\rangle = \sum_b p_b\, \nu_{i\uparrow}(b)\nu_{i\downarrow}(b),
+\end{equation}
+where \(\nu_{i\sigma}(b)\in\{0,1\}\) is the occupation bit in basis state \(b\).
+
+\section{Transverse-Field Ising Model from First Principles}
+
+\subsection{Hamiltonian}
+
+The second model currently supported by the backend is the transverse-field Ising model on the same open rectangular lattice:
+\begin{equation}
+H_{\mathrm{TFIM}}
+=
+-J \sum_{\langle i,j\rangle \in E} Z_i Z_j
+- h \sum_i X_i
+- g \sum_i Z_i.
+\end{equation}
+
+The three parameters have the following roles:
+\begin{itemize}
+\item \(J\): nearest-neighbor Ising coupling,
+\item \(h\): transverse field that induces quantum fluctuations,
+\item \(g\): optional longitudinal bias field.
+\end{itemize}
+
+\subsection{TFIM observables}
+
+The TFIM observable layer currently uses:
+\begin{align}
+M_z &= \frac{1}{N_s}\sum_i Z_i,\\
+M_x &= \frac{1}{N_s}\sum_i X_i,\\
+ZZ_{\mathrm{nn}} &= \frac{1}{|E|}\sum_{\langle i,j\rangle} Z_i Z_j,\\
+M_{\mathrm{stag}} &= \frac{1}{N_s}\sum_i (-1)^{x_i+y_i} Z_i,\\
+M_{\mathrm{stag}}^2 &= M_{\mathrm{stag}}^2,\\
+Z_{\mathrm{span}} &= Z_0 Z_{N_s-1}.
+\end{align}
+
+These play the same structural role for TFIM that \(\{D,n,M_s^2,K,C_{s,\max}\}\) play for Hubbard: they define a common coordinate system for exact solvers, cheap solvers, trust analysis, and QProbe.
+
+\section{Exact Diagonalization Layer}
+
+\subsection{Purpose}
+
+Exact diagonalization provides:
+
+\begin{itemize}
+\item exact ground-state energies,
+\item exact statevectors,
+\item exact expectation values for all observables,
+\item oracle labels for both trust modeling and measurement planning.
+\end{itemize}
+
+\subsection{Algorithm}
+
+Given a mapped Hamiltonian \(H\), the exact solver:
+
+\begin{enumerate}[label=\arabic*.]
+\item constructs the full matrix representation,
+\item diagonalizes it,
+\item extracts the ground-state energy \(E_0\),
+\item extracts the corresponding normalized eigenvector \(\vert\psi_0\rangle\),
+\item evaluates all registered observables on \(\vert\psi_0\rangle\).
+\end{enumerate}
+
+This logic is wrapped by \verb|ExactEDSolver| in \verb|backend/app/solvers/exact_ed.py|. The solver is now family-aware:
+
+\begin{itemize}
+\item for \texttt{hubbard}, it builds the Jordan-Wigner-mapped fermionic Hamiltonian,
+\item for \texttt{tfim}, it builds the spin Hamiltonian directly as a Pauli operator.
+\end{itemize}
+
+\subsection{Physics acceptance checks}
+
+The project includes hard acceptance tests to ensure the physics layer is not being gamed:
+
+\begin{itemize}
+\item manual builder equals mapped builder,
+\item \([H,N_\uparrow]=[H,N_\downarrow]=0\),
+\item \(E_0=-4\) for the free \(2\times 2\) model at \(U=0,\mu=0\),
+\item particle-hole symmetry derivative behavior near \(\mu=U/2\),
+\item qubit-ordering sanity on N\'eel-like states.
+\end{itemize}
+
+\section{Approximate Solver Layer: Mean-Field Hubbard}
+
+\subsection{Motivation}
+
+CorrMap needs a cheap, scalable baseline. The current approximation is an unrestricted self-consistent mean-field solver implemented in \verb|backend/app/solvers/mean_field.py|.
+
+\subsection{Mean-field decoupling}
+
+The exact interaction is
+\[
+U n_{i\uparrow}n_{i\downarrow}.
+\]
+At the Hartree level, one may write
+\begin{equation}
+n_{i\uparrow}n_{i\downarrow}
+\approx
+\langle n_{i\uparrow}\rangle n_{i\downarrow}
++
+n_{i\uparrow}\langle n_{i\downarrow}\rangle
+-
+\langle n_{i\uparrow}\rangle \langle n_{i\downarrow}\rangle.
+\label{eq:mf-decoupling}
+\end{equation}
+
+Using the site-dependent mean fields
+\[
+\bar n_{i\uparrow}=\langle n_{i\uparrow}\rangle,
+\qquad
+\bar n_{i\downarrow}=\langle n_{i\downarrow}\rangle,
+\]
+the two spin sectors see effective single-particle Hamiltonians
+\begin{align}
+H_\uparrow^{\mathrm{MF}} &= T + \mathrm{diag}(U\bar n_{\downarrow} - \mu),\\
+H_\downarrow^{\mathrm{MF}} &= T + \mathrm{diag}(U\bar n_{\uparrow} - \mu),
+\end{align}
+where \(T\) is the hopping matrix.
+
+\subsection{Self-consistency loop}
+
+The implemented algorithm is:
+
+\begin{enumerate}[label=\arabic*.]
+\item Seed \(\bar n_{\uparrow},\bar n_{\downarrow}\) with a half-filled antiferromagnetic pattern.
+\item Build \(H_\uparrow^{\mathrm{MF}}\) and \(H_\downarrow^{\mathrm{MF}}\).
+\item Diagonalize both.
+\item Occupy all single-particle eigenstates with negative energy.
+\item Recompute the densities from the occupied eigenvectors.
+\item Mix the update with the previous iterate:
+\[
+n^{(k+1)} \leftarrow \alpha n_{\mathrm{new}} + (1-\alpha)n^{(k)},
+\]
+with mixing parameter \(\alpha=0.35\).
+\item Stop when the maximum sitewise change is below \(10^{-8}\) or after \(200\) iterations.
+\end{enumerate}
+
+\subsection{Mean-field outputs}
+
+The mean-field solver returns:
+
+\begin{itemize}
+\item global observables \(\{D,n,M_s^2,K,C_{s,\max},E\}\),
+\item site observables \(\{n_\uparrow,n_\downarrow,D_i,S_i^z\}\),
+\item bond observables \(S_i^z S_j^z\),
+\item metadata \(\{\texttt{converged}, \texttt{iterations}\}\).
+\end{itemize}
+
+\section{Approximate Solver Layer: Mean-Field TFIM}
+
+\subsection{Motivation}
+
+To make CorrMap genuinely multi-family rather than Hubbard-only, the backend also includes a cheap TFIM solver in \verb|backend/app/solvers/tfim_mean_field.py|.
+
+\subsection{Mean-field closure}
+
+Starting from
+\[
+H_{\mathrm{TFIM}} = -J\sum_{\langle i,j\rangle} Z_i Z_j - h\sum_i X_i - g\sum_i Z_i,
+\]
+the mean-field approximation replaces
+\begin{equation}
+Z_i Z_j \approx Z_i \langle Z_j\rangle + \langle Z_i\rangle Z_j - \langle Z_i\rangle\langle Z_j\rangle.
+\end{equation}
+
+Each site then sees an effective local longitudinal field
+\begin{equation}
+h_i^{(z)} = g + J\sum_{j \in \mathcal{N}(i)} \langle Z_j\rangle,
+\end{equation}
+and therefore a local two-component field \((h, h_i^{(z)})\).
+
+\subsection{Local update rule}
+
+For a single spin in field \((h,h_i^{(z)})\), the local mean-field update is
+\begin{equation}
+\langle X_i\rangle = \frac{h}{\sqrt{h^2 + (h_i^{(z)})^2}},
+\qquad
+\langle Z_i\rangle = \frac{h_i^{(z)}}{\sqrt{h^2 + (h_i^{(z)})^2}},
+\end{equation}
+with the zero-field case handled separately.
+
+\subsection{Outputs}
+
+The TFIM mean-field solver returns:
+\begin{itemize}
+\item global observables \(\{M_z,M_x,ZZ_{\mathrm{nn}},M_{\mathrm{stag}}^2,Z_{\mathrm{span}},E\}\),
+\item site observables \(\{M_i^z, M_i^x\}\),
+\item bond observables \(\{Z_i Z_j\}\),
+\item convergence metadata.
+\end{itemize}
+
+\section{Observable Registry}
+
+The \verb|ObservableRegistry| is the bridge between physics and decision-making. It ensures that:
+
+\begin{itemize}
+\item exact and approximate solvers produce observables in the same coordinate system,
+\item solver comparison is well defined,
+\item QProbe targets are drawn from a shared dictionary of diagnostics.
+\end{itemize}
+
+For Hubbard, the default registry contains:
+\[
+\{D,\; n,\; M_s^2,\; K,\; C_{s,\max}\}.
+\]
+
+For TFIM, it additionally contains:
+\[
+\{M_z,\; M_x,\; ZZ_{\mathrm{nn}},\; M_{\mathrm{stag}}^2,\; Z_{\mathrm{span}}\}.
+\]
+
+The registry now also provides family-specific bond operators through a generic accessor so that exact solvers, cheap solvers, solver comparison, and QProbe all consume the same observable vocabulary for each model family.
+
+\section{Phase Classifier}
+
+\subsection{Purpose}
+
+The phase classifier is the regime-identification layer of the frontend. It is not the sole scientific contribution of the project, but it provides an interpretable first summary of the current instance.
+
+\subsection{Operational labels}
+
+Because the project works on finite lattices rather than the thermodynamic limit, labels are operational rather than asymptotic. The current labeling rule in \verb|backend/app/ml/schema.py| is:
+
+\begin{itemize}
+\item \textbf{Metal}: \(U < 2\).
+\item \textbf{Mott Insulator}: \(U \ge 8\) and \(|n-1|<0.05\).
+\item \textbf{Antiferromagnet}: \(U \ge 4\), \(|n-1|<0.05\), and \(M_s^2 > 0.4\).
+\item \textbf{Singlet-rich}: all other cases.
+\end{itemize}
+
+\subsection{Graph representation}
+
+Each lattice instance is converted into a graph sample with:
+
+\begin{itemize}
+\item node features of dimension \(5\),
+\item edge features of dimension \(1\),
+\item global features of dimension \(3\),
+\item node mask,
+\item adjacency matrix.
+\end{itemize}
+
+\subsection{Graph neural architecture}
+
+The model \verb|HubbardPhaseGraphNet| uses:
+
+\begin{enumerate}[label=\arabic*.]
+\item a linear projection of global features into an 8-dimensional embedding,
+\item concatenation of the global embedding to every node,
+\item a node projection to hidden dimension \(64\),
+\item three graph message-passing layers,
+\item mean pooling over active nodes,
+\item a two-layer MLP classification head.
+\end{enumerate}
+
+Each message layer constructs gated neighbor messages
+\[
+m_i = \frac{1}{d_i}\sum_j g(e_{ij})\, h_j,
+\]
+then updates
+\[
+h_i' = \mathrm{LayerNorm}\left(h_i + f([h_i,m_i])\right).
+\]
+
+\subsection{Training}
+
+The phase training pipeline:
+
+\begin{enumerate}[label=\arabic*.]
+\item generates \(2\times 2\) and \(2\times 3\) base samples,
+\item augments them,
+\item splits training and validation by base sample ID to avoid leakage across augmentations,
+\item trains with class-weighted cross-entropy,
+\item saves the best checkpoint by validation accuracy.
+\end{enumerate}
+
+\section{Solver Comparison and CorrMap}
+
+\subsection{Definition}
+
+CorrMap is the solver-trust layer. It answers:
+
+\begin{quote}
+Can the cheap solver be trusted here, or is the regime too strongly correlated?
+\end{quote}
+
+\subsection{Exact-vs-approx comparison}
+
+For a given problem, let:
+
+\begin{itemize}
+\item \(o_k^{\mathrm{exact}}\) be the exact observable values,
+\item \(o_k^{\mathrm{cheap}}\) be the mean-field values.
+\end{itemize}
+
+Then the comparison layer computes:
+\begin{align}
+\Delta_k^{\mathrm{abs}} &= |o_k^{\mathrm{cheap}} - o_k^{\mathrm{exact}}|,\\
+\Delta_k^{\mathrm{rel}} &= \frac{\Delta_k^{\mathrm{abs}}}{\max(|o_k^{\mathrm{exact}}|,10^{-8})},\\
+\Delta_{\max} &= \max_k \Delta_k^{\mathrm{abs}},\\
+\|\Delta\|_2 &= \left(\sum_k (\Delta_k^{\mathrm{abs}})^2\right)^{1/2},\\
+\Delta_E &= |E^{\mathrm{cheap}} - E^{\mathrm{exact}}|.
+\end{align}
+
+\subsection{Risk labels}
+
+Current risk thresholds are:
+
+\begin{itemize}
+\item \textbf{safe}: \(\Delta_{\max} < 0.08\) and \(\Delta_E < 0.25\),
+\item \textbf{warning}: \(\Delta_{\max} < 0.2\) and \(\Delta_E < 1.0\),
+\item \textbf{unsafe}: otherwise.
+\end{itemize}
+
+\subsection{Trust features}
+
+CorrMap uses only cheap-solver-accessible features plus lattice metadata. The current family-aware TrustNet feature vector has dimension \(22\). The first two coordinates are one-hot family flags for \texttt{hubbard} and \texttt{tfim}, followed by lattice and parameter metadata, then cheap-solver summary statistics.
+
+\begin{longtable}{p{0.08\textwidth}p{0.82\textwidth}}
+\toprule
+Index group & Meaning \\
+\midrule
+\endhead
+\(1\!-\!2\) & family flags for \texttt{hubbard} and \texttt{tfim} \\
+\(3\!-\!5\) & \(L_x\), \(L_y\), number of sites \\
+\(6\!-\!8\) & model parameters: \((t,U,\mu)\) for Hubbard or \((J,h,g)\) for TFIM \\
+\(9\!-\!14\) & six cheap-solver global observables, including energy \\
+\(15\!-\!16\) & mean and maximum absolute local order parameter magnitude \\
+\(17\) & linear staggered-order summary \\
+\(18\!-\!20\) & three site-level spread statistics \\
+\(21\!-\!22\) & convergence flag and iteration count for the cheap solver \\
+\bottomrule
+\end{longtable}
+
+\subsection{Why these features scale}
+
+These features are intentionally chosen to be:
+
+\begin{itemize}
+\item available on larger lattices,
+\item available without exact ED,
+\item approximately size-stable summary statistics,
+\item compatible with transfer tests such as \(2\times 2 \to 2\times 3\),
+\item compatible with mixed-family trust training across Hubbard and TFIM.
+\end{itemize}
+
+\subsection{TrustNet architecture}
+
+TrustNet is a small multilayer perceptron:
+
+\begin{itemize}
+\item input dimension: \(22\),
+\item hidden width: \(64\),
+\item LayerNorm after the first linear layer,
+\item GELU nonlinearities,
+\item outputs:
+  \begin{itemize}
+  \item risk logits for \(\{\texttt{safe},\texttt{warning},\texttt{unsafe}\}\),
+  \item a scalar prediction of the maximum absolute observable error.
+  \end{itemize}
+\end{itemize}
+
+\subsection{TrustNet training objective}
+
+The training loss is
+\begin{equation}
+\mathcal{L}_{\mathrm{trust}}
+=
+\mathcal{L}_{\mathrm{CE}}(\text{risk})
+ + \frac{1}{2}\mathcal{L}_{\mathrm{L1}}(\widehat{\Delta}_{\max},\Delta_{\max}),
+\end{equation}
+with class-weighted cross-entropy and \(L^1\) regression loss.
+
+\subsection{Conservative safe guards}
+
+TrustNet explicitly uses post-training safe guards to reduce false-safe errors. If the model predicts \texttt{safe} but:
+
+\begin{itemize}
+\item the predicted error exceeds a learned error guard, or
+\item the \texttt{safe} probability is below a learned probability guard,
+\end{itemize}
+
+the prediction is downgraded to \texttt{warning}. This makes CorrMap useful as a conservative router rather than an aggressive classifier.
+
+\subsection{Trust dataset generation}
+
+The trust dataset is generated by:
+
+\begin{enumerate}[label=\arabic*.]
+\item sweeping parameter grids for \(2\times 2\) and \(2\times 3\) Hubbard systems,
+\item sweeping parameter grids for \(2\times 2\) and \(2\times 3\) TFIM systems,
+\item solving each point exactly and approximately,
+\item comparing the two,
+\item storing the family-aware cheap-solver feature vector and oracle disagreement metrics.
+\end{enumerate}
+
+The current parameter grids are:
+
+\begin{itemize}
+\item \(2\times 2\): \(U \in \{0,0.5,1,1.5,2,3,4,5,6,8,10\}\), \(\mu \in \{-2,-1,0,1,2,3,4,5,6\}\),
+\item \(2\times 3\): \(U \in \{0,2,4,8,10\}\), \(\mu \in \{0,2,4,5\}\).
+\end{itemize}
+
+For TFIM, the current grids are:
+\begin{itemize}
+\item \(2\times 2\): \(J \in \{0.5,1.0,1.5\}\), \(h \in \{0.2,0.6,1.0,1.5,2.0\}\), \(g \in \{0.0,0.5\}\),
+\item \(2\times 3\): \(J=1.0\), \(h \in \{0.4,1.0,1.8\}\), \(g \in \{0.0,0.5\}\).
+\end{itemize}
+
+\section{QProbe: Exact Measurement Planner}
+
+\subsection{Motivation}
+
+QProbe is the measurement-planning layer. It answers:
+
+\begin{quote}
+Given a set of target observables, what is the smallest set of basis settings that still recovers them within a chosen tolerance?
+\end{quote}
+
+QProbe was originally implemented only for Hubbard observables. It is now generalized to work on any registered model family through a family-aware measurement-library builder. The same exact and adaptive planning logic therefore runs on both Hubbard and TFIM.
+
+\subsection{Pauli decomposition}
+
+Every target observable is first represented as a \verb|SparsePauliOp| and decomposed into Pauli terms:
+\[
+O = \sum_a \alpha_a P_a.
+\]
+
+\subsection{Measurement groups}
+
+Two Pauli terms can be measured in the same basis group if their required basis strings are compatible qubit by qubit. The grouping rule is:
+
+\begin{itemize}
+\item \(I\) is compatible with any symbol,
+\item \(X\) is compatible only with \(X\) or \(I\),
+\item \(Y\) is compatible only with \(Y\) or \(I\),
+\item \(Z\) is compatible only with \(Z\) or \(I\).
+\end{itemize}
+
+The merged basis for compatible terms is the qubitwise union of the non-identity symbols.
+
+\subsection{Measurement cost model}
+
+Each group has cost \(1\). This is a first-order proxy for:
+
+\begin{itemize}
+\item one basis rotation pattern,
+\item one circuit configuration,
+\item one block of repeated shots.
+\end{itemize}
+
+\subsection{Shot-based measurement model}
+
+For each group:
+
+\begin{enumerate}[label=\arabic*.]
+\item rotate the state into the required measurement basis,
+\item sample \(N_{\mathrm{shots}}\) computational-basis outcomes,
+\item optionally flip readout bits independently with probability \(p_{\mathrm{flip}}\),
+\item estimate each Pauli term by parity averaging.
+\end{enumerate}
+
+If a Pauli string has active qubit set \(A\), its measurement estimator is
+\begin{equation}
+\widehat{\langle P\rangle}
+=
+\frac{1}{N_{\mathrm{shots}}}\sum_{s=1}^{N_{\mathrm{shots}}}
+\prod_{q\in A} (-1)^{b_q^{(s)}},
+\end{equation}
+where \(b_q^{(s)}\) is the measured bit at qubit \(q\) in shot \(s\).
+
+\subsection{Exact QProbe search}
+
+The exact planner:
+
+\begin{enumerate}[label=\arabic*.]
+\item constructs the full merged measurement library for the selected targets,
+\item enumerates all subsets of groups,
+\item evaluates each subset on the exact small-system state under the chosen shot/noise model,
+\item returns the minimum-cost subset whose oracle max error is within tolerance.
+\end{enumerate}
+
+This is not the scalable runtime method. It is the \emph{oracle planner} used to:
+
+\begin{itemize}
+\item validate the measurement grouping logic,
+\item generate training data for ML-QProbe,
+\item provide a gold-standard benchmark.
+\end{itemize}
+
+\section{Adaptive QProbe}
+
+\subsection{Motivation}
+
+The exact QProbe search is combinatorial. Adaptive QProbe is the scalable runtime policy. It answers:
+
+\begin{quote}
+What should I measure next, and when can I stop, using only information available at runtime?
+\end{quote}
+
+\subsection{Key design correction}
+
+An earlier version of the adaptive planner used exact oracle error as part of the stopping condition. That is useful for benchmarking but not scalable. The current design explicitly separates:
+
+\begin{itemize}
+\item \textbf{runtime stopping}: based only on coverage, bootstrap uncertainty, and a noise floor,
+\item \textbf{oracle benchmarking}: computed afterward only on small solvable systems.
+\end{itemize}
+
+\subsection{Adaptive selection policy}
+
+Let \(T\) be the set of requested target observables, and let \(S(g)\subseteq T\) be the set of targets touched by group \(g\). At each step the planner:
+
+\begin{enumerate}[label=\arabic*.]
+\item tracks the set of already covered targets,
+\item defines the unresolved set \(U = T \setminus \text{covered}\),
+\item ranks remaining groups by:
+  \begin{enumerate}[label=(\alph*)]
+  \item number of unresolved targets they help cover,
+  \item number of Pauli terms they contain,
+  \item basis-string tie-breaker.
+  \end{enumerate}
+\item chooses the best-ranked group.
+\end{enumerate}
+
+\subsection{Bootstrap uncertainty}
+
+Given a current plan \(P\), the planner repeats the shot-based estimation several times with different seeds and computes the sample standard deviation for each target observable:
+\[
+\sigma_k(P) = \mathrm{std}\left(\widehat{O}_k^{(1)}, \dots, \widehat{O}_k^{(B)}\right).
+\]
+The runtime uncertainty statistic is
+\[
+\sigma_{\max}(P) = \max_k \sigma_k(P).
+\]
+
+\subsection{Runtime stop rule}
+
+The current runtime stop rule is:
+
+\begin{enumerate}[label=\arabic*.]
+\item all requested targets have been covered by the chosen groups,
+\item the uncertainty bound
+\[
+\sigma_{\max}(P) + p_{\mathrm{flip}}
+\]
+is below the user tolerance,
+\item the plan stops \emph{before} consuming every available group, so that it genuinely saves measurement cost.
+\end{enumerate}
+
+The addition of \(p_{\mathrm{flip}}\) is a conservative readout-noise floor. This prevents the adaptive policy from stopping simply because the bootstrap variance appears small in a highly biased noisy setting.
+
+\subsection{Oracle benchmark output}
+
+After the runtime stop decision is made, the small-system benchmark layer computes:
+
+\begin{itemize}
+\item exact reconstructed targets,
+\item exact max absolute error,
+\item a Boolean flag \verb|oracle_benchmark_within_tolerance|.
+\end{itemize}
+
+This number is shown to the user as a \emph{benchmark only}; it is not used by the runtime decision.
+
+\subsection{Generic workflow integration}
+
+The backend now exposes a generic workflow endpoint that performs, for any supported \verb|ProblemSpec|:
+\begin{itemize}
+\item an exact solve,
+\item a cheap approximate solve,
+\item CorrMap trust analysis,
+\item optional quantum escalation to VQE when a strong solver is registered,
+\item exact QProbe planning on the active quantum path when escalation occurs,
+\item Adaptive QProbe planning on the active quantum path when escalation occurs.
+\end{itemize}
+
+This is the first fully general backend path in the repository, and it is what the new frontend workflow tester uses directly.
+
+\subsection{Runtime routing semantics}
+
+The current workflow service implements the following decision logic:
+
+\begin{enumerate}[label=\arabic*.]
+\item Run the cheap solver.
+\item Compare the cheap solver to the exact oracle on the small calibration system.
+\item Use CorrMap to assign one of \(\{\texttt{safe},\texttt{warning},\texttt{unsafe}\}\).
+\item If the label is \texttt{safe}, keep the cheap solver and do not run QProbe.
+\item If the label is \texttt{warning} or \texttt{unsafe} and a strong quantum solver exists, escalate to VQE and run QProbe on the VQE state.
+\item If the label is \texttt{warning} or \texttt{unsafe} and no strong quantum solver exists, fall back to the exact oracle on the small system and do not run QProbe.
+\end{enumerate}
+
+This means the current family behavior is:
+
+\begin{itemize}
+\item \textbf{TFIM}: cheap solver \(\rightarrow\) CorrMap \(\rightarrow\) possible VQE escalation \(\rightarrow\) QProbe on the VQE state.
+\item \textbf{Hubbard}: cheap solver \(\rightarrow\) CorrMap \(\rightarrow\) exact-oracle fallback if unsafe, since no Hubbard VQE path is yet registered.
+\end{itemize}
+
+\section{ML-QProbe}
+
+\subsection{Purpose}
+
+ML-QProbe is the learned surrogate for exact QProbe. It answers:
+
+\begin{quote}
+Can a trained model recover the measurement-plan decision of exact QProbe without re-running the combinatorial search?
+\end{quote}
+
+\subsection{Dataset}
+
+The QProbe dataset is generated from:
+
+\begin{itemize}
+\item four representative parameter points \((U,\mu)\),
+\item three target sets,
+\item two readout-noise levels,
+\item two shot counts,
+\item two tolerances.
+\end{itemize}
+
+For each sample, the oracle planner provides:
+
+\begin{itemize}
+\item recommended cost,
+\item full cost,
+\item success/failure,
+\item max oracle error,
+\item selected bases.
+\end{itemize}
+
+\subsection{Feature vector}
+
+The QProbe feature vector has dimension \(15\):
+
+\begin{itemize}
+\item \(U,\mu\),
+\item exact observables \(D,n,M_s^2,K,C_{s,\max}\),
+\item tolerance,
+\item shots per group,
+\item readout-flip probability,
+\item five binary flags indicating which targets are requested.
+\end{itemize}
+
+\subsection{Model}
+
+ML-QProbe is a multilayer perceptron with:
+
+\begin{itemize}
+\item input dimension \(15\),
+\item two hidden layers of width \(64\),
+\item outputs:
+  \begin{itemize}
+  \item cost-class logits,
+  \item success logits,
+  \item scalar max-error prediction.
+  \end{itemize}
+\end{itemize}
+
+The cost classes are currently
+\[
+\{1,2,4,6\}.
+\]
+
+\subsection{Training loss}
+
+The training objective is
+\begin{equation}
+\mathcal{L}_{\mathrm{qprobe}}
+=
+\mathcal{L}_{\mathrm{CE}}(\text{cost})
+\;+\;
+\frac{1}{2}\mathcal{L}_{\mathrm{CE}}(\text{success})
+\;+\;
+\frac{1}{2}\mathcal{L}_{\mathrm{L1}}(\widehat{\Delta}_{\max}, \Delta_{\max}).
+\end{equation}
+
+\subsection{Metric of greatest interest}
+
+The most important QProbe safety metric is the \emph{false-safe rate}: how often the learned recommender suggests a compressed plan in a case where the oracle planner did not certify success.
+
+\section{End-to-End Decision Pipeline}
+
+The current application is designed as a three-stage pipeline:
+
+\begin{enumerate}[label=\arabic*.]
+\item \textbf{Identify the regime}: use the phase classifier to summarize the physics.
+\item \textbf{Check solver trust}: use CorrMap to decide whether the cheap solver is safe.
+\item \textbf{Plan the measurements}: use QProbe or Adaptive QProbe to reduce measurement cost for the chosen diagnostics.
+\end{enumerate}
+
+This yields a final recommendation of the form:
+
+\begin{quote}
+Regime \(=\) \texttt{Antiferromagnet}; cheap solver \(=\) risky; recommendation \(=\) escalate to exact/advanced method; if escalated, use Adaptive QProbe runtime plan.
+\end{quote}
+
+\section{API Surface}
+
+The FastAPI surface in \verb|backend/app/api/routes.py| includes:
+
+\subsection{State and simulation endpoints}
+
+\begin{itemize}
+\item \verb|POST /api/state/create|
+\item \verb|POST /api/state/set-params|
+\item \verb|POST /api/state/reset-neel|
+\item \verb|POST /api/state/place-configuration|
+\item \verb|POST /api/state/evolve|
+\item \verb|POST /api/state/ground-state|
+\item \verb|GET /api/state/observables|
+\item \verb|GET /api/state/predict-phase|
+\item \verb|GET /api/state/export|
+\end{itemize}
+
+\subsection{Trust endpoints}
+
+\begin{itemize}
+\item \verb|GET /api/trust/metrics|
+\item \verb|POST /api/trust/evaluate|
+\end{itemize}
+
+\subsection{QProbe endpoints}
+
+\begin{itemize}
+\item \verb|GET /api/qprobe/library|
+\item \verb|POST /api/qprobe/recommend-plan|
+\item \verb|POST /api/qprobe/adaptive-plan|
+\end{itemize}
+
+\subsection{Generic workflow endpoint}
+
+\begin{itemize}
+\item \verb|POST /api/workflow/analyze|
+\end{itemize}
+
+This endpoint accepts:
+\begin{itemize}
+\item model family,
+\item lattice size,
+\item family-specific parameter dictionary,
+\item QProbe target list,
+\item tolerance, shot count, readout-noise level, and optional seed.
+\end{itemize}
+
+It returns a single payload containing:
+\begin{itemize}
+\item available solvers for the selected model family,
+\item the selected cheap solver and selected strong solver,
+\item the workflow routing decision,
+\item exact solver result,
+\item cheap solver result,
+\item strong solver result when present,
+\item trust comparison and recommendation,
+\item exact QProbe result only when the workflow escalates into the quantum path,
+\item Adaptive QProbe result only when the workflow escalates into the quantum path,
+\item measurement library for the requested family.
+\end{itemize}
+
+\section{Frontend Product Design}
+
+\subsection{Principle}
+
+The frontend is designed as a thin explanation and testing layer over the backend, not as an independent simulation engine. At the current stage of the project, the frontend has two simultaneous roles:
+
+\begin{enumerate}[label=\arabic*.]
+\item \textbf{backend inspector}: expose the exact backend behavior explicitly so the team can verify correctness,
+\item \textbf{future product shell}: show the structure that will later be simplified into a cleaner hackathon-facing product.
+\end{enumerate}
+
+\subsection{Two frontend modes currently present}
+
+The page currently exposes two overlapping views:
+
+\begin{enumerate}[label=\arabic*.]
+\item the \textbf{legacy Hubbard-specific view}, which exercises the older stateful endpoints such as \verb|/api/state/export|, \verb|/api/trust/evaluate|, and the Hubbard-only QProbe routes;
+\item the \textbf{unified workflow tester}, which exercises the final route \verb|POST /api/workflow/analyze| and is the correct way to test the full backend architecture.
+\end{enumerate}
+
+For backend validation, the unified workflow tester should be treated as the primary interface.
+
+\subsection{What a non-physicist should understand first}
+
+The page is easiest to understand if it is read in the following order:
+
+\begin{enumerate}[label=\arabic*.]
+\item \textbf{Regime Summary}: ``what kind of state am I looking at?''
+\item \textbf{CorrMap}: ``can I trust the cheap fast solver?''
+\item \textbf{Workflow Decision}: ``do I stop, fall back to the exact oracle, or escalate to VQE?''
+\item \textbf{QProbe}: ``if I used the quantum path, how many measurements can I safely skip?''
+\end{enumerate}
+
+This is the intended product logic. The user should not think of the app as three unrelated widgets.
+
+\subsection{Full guide to reading the frontend}
+
+\subsubsection{Hero and guide cards}
+
+The top of the page explains the product in plain English. These cards exist to answer:
+\begin{itemize}
+\item what the app is for,
+\item what order to read the panels in,
+\item which panels are descriptive and which are decision-making layers.
+\end{itemize}
+
+For a non-specialist, the correct summary is:
+
+\begin{quote}
+The app first summarizes the state, then checks whether a cheap solver is trustworthy, then only uses the quantum measurement planner if the stronger solver path is actually needed.
+\end{quote}
+
+\subsubsection{Unified workflow tester}
+
+This is the most important section for backend validation. It calls:
+\[
+\verb|POST /api/workflow/analyze|.
+\]
+
+It should be read as the final backend decision engine.
+
+It shows:
+\begin{itemize}
+\item the chosen model family,
+\item the cheap solver,
+\item the strong solver if one exists,
+\item the active solver the workflow actually selected,
+\item the CorrMap risk label,
+\item the measurement mode:
+  \begin{itemize}
+  \item \verb|not_needed|,
+  \item \verb|quantum_follow_on|,
+  \item \verb|oracle_fallback|.
+  \end{itemize}
+\end{itemize}
+
+\paragraph{How to interpret the three workflow modes.}
+
+\begin{itemize}
+\item \textbf{\texttt{not\_needed}}: the cheap solver is good enough; the workflow stops early.
+\item \textbf{\texttt{quantum\_follow\_on}}: the cheap solver is not good enough, so the workflow escalates to the quantum solver and then applies QProbe to the quantum result.
+\item \textbf{\texttt{oracle\_fallback}}: the cheap solver is not good enough, but there is no registered quantum solver for that model family yet, so the backend falls back to the exact oracle on the small solvable system.
+\end{itemize}
+
+\subsubsection{Workflow presets}
+
+The workflow presets are there to force known backend branches:
+
+\begin{itemize}
+\item \texttt{TFIM Safe}: demonstrate the safe cheap-solver branch,
+\item \texttt{TFIM Quantum Escalation}: demonstrate the CorrMap \(\rightarrow\) VQE \(\rightarrow\) QProbe branch,
+\item \texttt{Hubbard Exact Fallback}: demonstrate the no-quantum-solver fallback branch.
+\end{itemize}
+
+These are not cosmetic presets. They are reproducible backend test cases.
+
+\subsubsection{Cheap solver card}
+
+This card shows the approximate fast baseline. A non-specialist should read it as:
+\begin{quote}
+``This is the quick answer.''
+\end{quote}
+
+The values shown here are the ones CorrMap decides whether to trust.
+
+\subsubsection{Exact oracle card}
+
+This card shows the small-system reference answer. A non-specialist should read it as:
+\begin{quote}
+``This is the ground-truth answer for this tiny benchmark problem.''
+\end{quote}
+
+This is not the scalable runtime method. It is the calibration answer used to audit the other methods.
+
+\subsubsection{Strong solver card}
+
+When present, this is the quantum escalation path, currently VQE for TFIM. A non-specialist should read it as:
+\begin{quote}
+``This is the stronger quantum method we switch to when the cheap solver is not trustworthy.''
+\end{quote}
+
+\subsubsection{CorrMap gap table}
+
+This table is one of the most important parts of the page. Each row compares the cheap solver to the exact oracle on one observable.
+
+Each row shows:
+\begin{itemize}
+\item the name of the observable,
+\item the absolute gap,
+\item the relative gap.
+\end{itemize}
+
+For a non-specialist:
+\begin{itemize}
+\item smaller gaps mean the cheap solver is behaving well,
+\item larger gaps mean the cheap solver is missing important physics,
+\item the risk label \texttt{safe}/\texttt{warning}/\texttt{unsafe} is derived from these gaps plus the energy gap.
+\end{itemize}
+
+\subsubsection{QProbe cards}
+
+QProbe should now be interpreted as:
+\begin{quote}
+``How can I read out the quantum result with as little measurement cost as possible?''
+\end{quote}
+
+The fixed QProbe card shows:
+\begin{itemize}
+\item the full plan cost,
+\item the recommended plan cost,
+\item the number of saved measurement groups,
+\item the worst reconstruction error.
+\end{itemize}
+
+The adaptive QProbe card shows:
+\begin{itemize}
+\item the runtime stopping rule,
+\item the final adaptive cost,
+\item the oracle benchmark check.
+\end{itemize}
+
+For a non-specialist:
+\begin{itemize}
+\item if groups are saved and the error remains acceptable, the shortcut worked,
+\item if no groups are saved, QProbe is not broken; it is refusing an unsafe shortcut,
+\item the adaptive planner is the scalable runtime method,
+\item the oracle benchmark is only a small-system validation check.
+\end{itemize}
+
+\subsection{How to read each parameter}
+
+\subsubsection{Hubbard parameters}
+
+\paragraph{\(t\): hopping strength.}
+This controls how easily electrons move between neighboring sites.
+\begin{itemize}
+\item larger \(t\) means more motion,
+\item more motion often makes the state look more metal-like,
+\item increasing \(t\) can make motion-related observables such as \(K\) more important.
+\end{itemize}
+
+\paragraph{\(U\): on-site repulsion.}
+This controls how costly it is for two electrons to sit on the same site.
+\begin{itemize}
+\item larger \(U\) suppresses double occupancy,
+\item larger \(U\) tends to create stronger correlation effects,
+\item larger \(U\) is also where cheap mean-field approximations are more likely to fail.
+\end{itemize}
+
+\paragraph{\(\mu\): chemical potential.}
+This controls how full the lattice wants to be.
+\begin{itemize}
+\item around half filling, the average filling \(n\) is near \(1\),
+\item changing \(\mu\) can move the system into different filling regimes,
+\item this often changes both the regime summary and the solver-trust label.
+\end{itemize}
+
+\subsubsection{TFIM parameters}
+
+\paragraph{\(J\): Ising interaction strength.}
+This controls how strongly neighboring spins want to align in the \(Z\) direction.
+\begin{itemize}
+\item larger \(J\) favors classical Ising order,
+\item if \(J\) dominates, the system prefers spin alignment patterns over transverse fluctuations.
+\end{itemize}
+
+\paragraph{\(h\): transverse field strength.}
+This controls how strongly spins are pushed into the \(X\) direction.
+\begin{itemize}
+\item larger \(h\) creates stronger quantum fluctuations,
+\item this competes directly with the \(ZZ\) interaction,
+\item TFIM VQE is trying to capture the balance between these two effects.
+\end{itemize}
+
+\paragraph{\(g\): longitudinal field strength.}
+This biases spins directly in the \(Z\) direction.
+\begin{itemize}
+\item larger \(g\) breaks the symmetry between positive and negative \(Z\)-magnetization,
+\item nonzero \(g\) can make the cheap solver much easier to trust in some regimes.
+\end{itemize}
+
+\subsubsection{QProbe parameters}
+
+\paragraph{Tolerance.}
+This is the allowed reconstruction error budget.
+\begin{itemize}
+\item smaller tolerance means a stricter planner,
+\item stricter tolerance usually means fewer acceptable shortcuts,
+\item if tolerance is very small, QProbe may correctly refuse compression.
+\end{itemize}
+
+\paragraph{Shots per group.}
+This is the number of repeated measurements used for each basis setting.
+\begin{itemize}
+\item more shots reduce random measurement noise,
+\item more shots cost more experiment time,
+\item if the shot count is too low, QProbe and Adaptive QProbe will be more conservative.
+\end{itemize}
+
+\paragraph{Readout noise / flip probability.}
+This simulates classical readout mistakes.
+\begin{itemize}
+\item higher values represent a noisier device,
+\item noisier readout makes safe compression harder,
+\item Adaptive QProbe includes this value in its conservative stopping rule.
+\end{itemize}
+
+\subsection{How to read the observables without physics background}
+
+The frontend exposes two different observable vocabularies depending on the model family.
+
+\subsubsection{Hubbard observables}
+
+\begin{itemize}
+\item \textbf{Double occupancy \(D\)}: how often two electrons sit on the same site.
+\item \textbf{Average filling \(n\)}: how full the lattice is on average.
+\item \textbf{Spin-alternation strength \(M_s^2\)}: how strong the checkerboard antiferromagnetic pattern is.
+\item \textbf{Motion / kinetic signal \(K\)}: how strongly electrons are delocalizing and hopping.
+\item \textbf{Long-range spin link \(C_{s,\max}\)}: how correlated the most distant sites are.
+\end{itemize}
+
+\subsubsection{TFIM observables}
+
+\begin{itemize}
+\item \textbf{\(M_z\)}: average spin polarization along \(Z\).
+\item \textbf{\(M_x\)}: average spin polarization along \(X\).
+\item \textbf{\(ZZ_{\mathrm{nn}}\)}: nearest-neighbor Ising ordering strength.
+\item \textbf{\(M_{\mathrm{stag}}^2\)}: checkerboard-like staggered order.
+\item \textbf{\(Z_{\mathrm{span}}\)}: long-distance \(Z\)-direction correlation.
+\end{itemize}
+
+\subsection{What the frontend is trying to teach the user}
+
+The present frontend is intentionally verbose. Its teaching goal is:
+
+\begin{enumerate}[label=\arabic*.]
+\item explain what each panel does,
+\item identify which backend endpoint it exercises,
+\item make the runtime decisions legible in plain English,
+\item expose enough raw information that the backend can be audited by hand.
+\end{enumerate}
+
+This is not the final presentation UI. It is the explicit test harness for the finished backend.
+
+\section{Training and Artifact Management}
+
+\subsection{Saved artifacts}
+
+The backend uses \verb|backend/artifacts/| for all model and dataset outputs, including:
+
+\begin{itemize}
+\item phase-classifier datasets and checkpoints,
+\item ML-QProbe dataset, checkpoint, and metrics,
+\item TrustNet dataset, checkpoint, and metrics,
+\item hero-report JSON files for reproducible demo summaries.
+\end{itemize}
+
+\subsection{Training scripts}
+
+The major scripts are:
+
+\begin{itemize}
+\item \verb|backend/scripts/data_gen.py| and \verb|train_gnn.py|,
+\item \verb|backend/scripts/data_gen_qprobe.py| and \verb|train_qprobe_model.py|,
+\item \verb|backend/scripts/data_gen_trust.py| and \verb|train_trust_model.py|.
+\end{itemize}
+
+\section{Validation Philosophy}
+
+\subsection{Physics validation}
+
+The project treats physics checks as hard gates. The Hamiltonian and observable layer is validated before any ML story is allowed.
+
+\subsection{ML validation}
+
+The project uses:
+
+\begin{itemize}
+\item held-out train/validation/test splits,
+\item cross-lattice transfer tests where implemented,
+\item false-safe rates as a first-class metric,
+\item model-missing fallbacks in inference.
+\end{itemize}
+
+\subsection{Measurement-planning validation}
+
+The project explicitly distinguishes:
+
+\begin{itemize}
+\item the exact planner,
+\item the runtime adaptive policy,
+\item the oracle benchmark used only to score runtime behavior.
+\end{itemize}
+
+This distinction is necessary for any credible scalability claim.
+
+\section{What Is Implemented Versus What Is Conceptual}
+
+\subsection{Implemented now}
+
+The following are implemented in the current repository:
+
+\begin{itemize}
+\item exact Fermi-Hubbard builder with spin-major ordering and verified signs,
+\item exact TFIM builder,
+\item exact diagonalization on small lattices,
+\item site and global observables,
+\item state preparation and evolution,
+\item phase classifier with graph-based model,
+\item exact QProbe,
+\item Adaptive QProbe with runtime stop rule separated from oracle evaluation,
+\item mean-field solver,
+\item TFIM mean-field solver,
+\item TFIM VQE solver,
+\item exact-vs-mean-field comparison,
+\item TrustNet / CorrMap with mixed-family feature support,
+\item generic workflow analysis endpoint spanning exact solve, cheap solve, trust, optional VQE escalation, and measurement planning,
+\item a frontend workflow tester that exposes the full unified backend route in explicit detail.
+\end{itemize}
+
+\subsection{Framework extensions enabled by this design}
+
+The architecture now makes the following future steps reasonable:
+
+\begin{itemize}
+\item additional solver plugins,
+\item additional model families via \verb|ProblemSpec|,
+\item solver-agnostic trust models,
+\item model-agnostic measurement planning,
+\item larger-lattice approximate workflows benchmarked against small exact oracles.
+\end{itemize}
+
+\section{Interpretation and Intended Scientific Use}
+
+This project should not be interpreted as a claim that \(2\times 2\) Hubbard plaquettes directly solve realistic materials problems. The intended scientific use is:
+
+\begin{enumerate}[label=\arabic*.]
+\item use small solvable systems as a calibration testbed,
+\item learn trust and measurement policies that rely only on scalable inputs,
+\item benchmark those policies against oracle data,
+\item extend the policies to larger systems and additional models.
+\end{enumerate}
+
+In that sense:
+
+\begin{itemize}
+\item \textbf{exact ED} is the teacher,
+\item \textbf{mean-field and related approximations} are the scalable baselines,
+\item \textbf{CorrMap} is the solver-routing intelligence,
+\item \textbf{QProbe} is the measurement-efficiency intelligence.
+\end{itemize}
+
+\section{Conclusion}
+
+Crystal Forge has evolved into a complete proof-of-concept architecture for solver-aware and measurement-aware lattice-model workflows. Its current value lies in the fact that every learned or approximate layer is anchored to exact small-system supervision and explicit oracle benchmarking, and that the same backend structure now operates across more than one model family.
+
+The resulting system is not just a phase-classifier demo and not just a measurement toy. It is a prototype of a workflow engine that answers three operational questions:
+
+\begin{enumerate}[label=\arabic*.]
+\item What regime am I in?
+\item Can I trust the cheap solver?
+\item If I need a stronger method, what is the cheapest safe way to measure it?
+\end{enumerate}
+
+That is the central design thesis of the project, and the current repository already implements the major pieces of that thesis in working code.
+
+\end{document}

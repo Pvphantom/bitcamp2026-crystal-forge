@@ -150,6 +150,13 @@ h2 {
   margin-top: 1rem;
 }
 
+.inspector-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
 .guide-card {
   border: 1px solid rgba(143, 160, 190, 0.14);
   background: rgba(10, 18, 32, 0.76);
@@ -164,6 +171,28 @@ h2 {
 }
 
 .guide-card span {
+  color: #d6deef;
+  line-height: 1.5;
+}
+
+.inspector-card {
+  border: 1px solid rgba(143, 160, 190, 0.14);
+  background: rgba(10, 18, 32, 0.76);
+  border-radius: 22px;
+  padding: 1rem 1.1rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.inspector-card strong {
+  font-size: 1rem;
+}
+
+.inspector-card code {
+  width: fit-content;
+}
+
+.inspector-card span:last-child {
   color: #d6deef;
   line-height: 1.5;
 }
@@ -290,9 +319,19 @@ h2 {
   gap: 1rem;
 }
 
+.workflow-tester {
+  margin-top: 1rem;
+}
+
 .workflow-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.checklist-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.8rem;
 }
 
@@ -508,6 +547,26 @@ h2 {
   display: grid;
   gap: 0.6rem;
   margin-top: 1rem;
+}
+
+.endpoint-box {
+  display: grid;
+  gap: 0.35rem;
+  border-radius: 16px;
+  background: rgba(79, 179, 255, 0.08);
+  border: 1px solid rgba(79, 179, 255, 0.14);
+  padding: 0.9rem 0.95rem;
+  margin-bottom: 1rem;
+}
+
+.endpoint-box strong {
+  font-size: 0.92rem;
+}
+
+.endpoint-box span {
+  color: #c7d2e8;
+  line-height: 1.5;
+  font-size: 0.84rem;
 }
 
 .help-row {
@@ -838,14 +897,56 @@ h2 {
   color: #cfdaef;
 }
 
+.details-box {
+  margin-top: 1rem;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(143, 160, 190, 0.1);
+  padding: 0.85rem 0.95rem;
+}
+
+.details-box summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: #e4ebfa;
+}
+
+.details-content {
+  margin-top: 0.8rem;
+  display: grid;
+  gap: 0.7rem;
+  color: #c3cde2;
+  line-height: 1.6;
+}
+
+.details-content p {
+  color: #c3cde2;
+}
+
+.json-box {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-radius: 14px;
+  background: rgba(7, 12, 22, 0.84);
+  border: 1px solid rgba(143, 160, 190, 0.1);
+  padding: 0.9rem;
+  color: #d9e2f5;
+  font-size: 0.79rem;
+  line-height: 1.5;
+  overflow-x: auto;
+}
+
 @media (max-width: 980px) {
   .hero-card,
   .guide-grid,
+  .inspector-grid,
   .pipeline-grid,
   .preset-strip,
   .hero-stats,
   .why-grid,
   .workflow-grid,
+  .checklist-grid,
   .dashboard-grid {
     grid-template-columns: 1fr;
   }

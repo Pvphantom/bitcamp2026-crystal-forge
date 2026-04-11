@@ -144,7 +144,7 @@ def fit_model(
     )
     class_weights = class_weights / class_weights.sum() * len(TRUST_LABELS)
 
-    model = TrustMLP(input_dim=20, hidden_dim=64, num_classes=len(TRUST_LABELS))
+    model = TrustMLP(input_dim=22, hidden_dim=64, num_classes=len(TRUST_LABELS))
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     risk_loss = nn.CrossEntropyLoss(weight=class_weights)
     error_loss = nn.L1Loss()
@@ -240,7 +240,7 @@ def train(
     torch.save(
         {
             "model_state": {key: value.cpu() for key, value in model.state_dict().items()},
-            "model_config": {"input_dim": 20, "hidden_dim": 64, "num_classes": len(TRUST_LABELS)},
+            "model_config": {"input_dim": 22, "hidden_dim": 64, "num_classes": len(TRUST_LABELS)},
             "labels": TRUST_LABELS,
             "feature_mean": feature_mean,
             "feature_std": feature_std,
@@ -249,8 +249,8 @@ def train(
         },
         model_out,
     )
-    two_by_two = [sample for sample in samples if sample["metadata"]["nsites"] == 4]
-    two_by_three = [sample for sample in samples if sample["metadata"]["nsites"] == 6]
+    two_by_two = [sample for sample in samples if sample["metadata"]["family"] == "hubbard" and sample["metadata"]["nsites"] == 4]
+    two_by_three = [sample for sample in samples if sample["metadata"]["family"] == "hubbard" and sample["metadata"]["nsites"] == 6]
     if two_by_two and two_by_three:
         train_2x2_raw, val_2x2_raw = train_test_split(
             two_by_two,
@@ -280,6 +280,11 @@ def train(
             "num_train_samples": len(train_2x2_raw),
             "num_test_samples": len(test_2x3),
         }
+    family_counts: dict[str, int] = {}
+    for sample in samples:
+        family = sample["metadata"]["family"]
+        family_counts[family] = family_counts.get(family, 0) + 1
+    metrics["family_counts"] = family_counts
     metrics_out.write_text(json.dumps(metrics, indent=2))
     return metrics
 

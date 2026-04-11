@@ -164,6 +164,8 @@ class MeasurementPlanResponse(BaseModel):
     success: bool
     targets: list[str]
     tolerance: float
+    planning_state_solver: str | None = None
+    oracle_reference_solver: str | None = None
     full_cost: int
     recommended_cost: int
     measurement_savings: int
@@ -196,6 +198,8 @@ class AdaptiveMeasurementPlanResponse(BaseModel):
     targets: list[str]
     tolerance: float
     runtime_stop_rule: str
+    planning_state_solver: str | None = None
+    oracle_reference_solver: str | None = None
     full_cost: int
     final_cost: int
     measurement_savings: int
@@ -214,3 +218,57 @@ class ExportStateResponse(BaseModel):
     observables: ObservablesResponse
     phase: PhasePredictionResponse
     metrics: MetricsSummaryResponse
+
+
+class GenericProblemRequest(BaseModel):
+    model_family: str = Field(default="hubbard")
+    Lx: int = Field(default=2, ge=2)
+    Ly: int = Field(default=2, ge=2)
+    parameters: dict[str, float] = Field(default_factory=dict)
+    qprobe_targets: list[str] = Field(default_factory=list)
+    qprobe_tolerance: float = Field(default=0.03, gt=0.0)
+    qprobe_shots_per_group: int = Field(default=4000, ge=1)
+    qprobe_readout_flip_prob: float = Field(default=0.0, ge=0.0, le=0.5)
+    qprobe_seed: int | None = None
+
+
+class GenericSolverResultResponse(BaseModel):
+    solver_name: str
+    energy: float
+    observables: dict[str, float]
+    site_observables: dict[str, list[float]] = Field(default_factory=dict)
+    bond_observables: dict[str, float] = Field(default_factory=dict)
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class GenericTrustResponse(BaseModel):
+    abs_error: dict[str, float]
+    rel_error: dict[str, float]
+    max_abs_error: float
+    energy_error: float
+    risk_label: str
+    recommended_action: str
+
+
+class WorkflowDecisionResponse(BaseModel):
+    escalation_triggered: bool
+    active_solver: str
+    measurement_mode: str
+    recommendation: str
+
+
+class GenericAnalysisResponse(BaseModel):
+    model_family: str
+    lattice: dict[str, int]
+    parameters: dict[str, float]
+    available_solvers: list[str] = Field(default_factory=list)
+    selected_cheap_solver: str
+    selected_strong_solver: str | None = None
+    workflow_decision: WorkflowDecisionResponse
+    exact_solver: GenericSolverResultResponse
+    cheap_solver: GenericSolverResultResponse
+    strong_solver: GenericSolverResultResponse | None = None
+    trust: GenericTrustResponse
+    measurement_library: MeasurementLibraryResponse
+    qprobe_exact: MeasurementPlanResponse | None = None
+    qprobe_adaptive: AdaptiveMeasurementPlanResponse | None = None

@@ -210,32 +210,37 @@ class TrustInferenceEngine:
     def predict(self, features: torch.Tensor | Any) -> dict[str, Any] | None:
         if not self.is_available():
             return None
-        model = self._load()
-        assert self._feature_mean is not None and self._feature_std is not None
-        feature_tensor = torch.as_tensor(features, dtype=torch.float32)
-        normalized = (feature_tensor - self._feature_mean) / self._feature_std
-        model.eval()
-        with torch.no_grad():
-            outputs = model(normalized.unsqueeze(0))
-            probs = torch.softmax(outputs["risk_logits"], dim=-1)[0]
-            label_index = int(torch.argmax(probs).item())
-            predicted_error = float(outputs["error_pred"].item())
-        if (
-            self._safe_error_guard is not None
-            and self._safe_prob_guard is not None
-            and label_index == self._labels.index("safe")
-            and (predicted_error > self._safe_error_guard or float(probs[label_index].item()) < self._safe_prob_guard)
-        ):
-            label_index = self._labels.index("warning")
-        label = self._labels[label_index]
-        return {
-            "available": True,
-            "model_path": str(self.model_path),
-            "label": label,
-            "confidence": float(probs[label_index].item()),
-            "predicted_max_abs_error": predicted_error,
-            "recommended_action": _trust_action(label),
-        }
+        try:
+            model = self._load()
+            assert self._feature_mean is not None and self._feature_std is not None
+            feature_tensor = torch.as_tensor(features, dtype=torch.float32)
+            if feature_tensor.shape[-1] != self._feature_mean.shape[-1]:
+                return None
+            normalized = (feature_tensor - self._feature_mean) / self._feature_std
+            model.eval()
+            with torch.no_grad():
+                outputs = model(normalized.unsqueeze(0))
+                probs = torch.softmax(outputs["risk_logits"], dim=-1)[0]
+                label_index = int(torch.argmax(probs).item())
+                predicted_error = float(outputs["error_pred"].item())
+            if (
+                self._safe_error_guard is not None
+                and self._safe_prob_guard is not None
+                and label_index == self._labels.index("safe")
+                and (predicted_error > self._safe_error_guard or float(probs[label_index].item()) < self._safe_prob_guard)
+            ):
+                label_index = self._labels.index("warning")
+            label = self._labels[label_index]
+            return {
+                "available": True,
+                "model_path": str(self.model_path),
+                "label": label,
+                "confidence": float(probs[label_index].item()),
+                "predicted_max_abs_error": predicted_error,
+                "recommended_action": _trust_action(label),
+            }
+        except Exception:
+            return None
 
     def _load(self) -> TrustMLP:
         if self._loaded and self._model is not None:

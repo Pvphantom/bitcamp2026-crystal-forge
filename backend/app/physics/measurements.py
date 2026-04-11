@@ -12,6 +12,8 @@ from dataclasses import dataclass
 
 from qiskit.quantum_info import SparsePauliOp
 
+from app.domain.problem_spec import ProblemSpec
+from app.observables.registry import ObservableRegistry, build_default_observable_registry
 from app.physics.observables import (
     build_double_occ,
     build_filling,
@@ -137,6 +139,17 @@ def build_measurement_library(Lx: int, Ly: int, t: float) -> dict[str, list[Meas
     return {
         name: group_operator_terms(name, operator)
         for name, operator in observable_library(Lx, Ly, t).items()
+    }
+
+
+def build_measurement_library_for_problem(
+    problem: ProblemSpec,
+    registry: ObservableRegistry | None = None,
+) -> dict[str, list[MeasurementGroup]]:
+    observable_registry = registry or build_default_observable_registry()
+    return {
+        name: group_operator_terms(name, operator)
+        for name, operator in observable_registry.operator_map(problem).items()
     }
 
 

@@ -52,6 +52,25 @@ class ProblemSpec:
             metadata=metadata or {},
         )
 
+    @classmethod
+    def tfim(
+        cls,
+        *,
+        Lx: int,
+        Ly: int,
+        J: float,
+        h: float,
+        g: float = 0.0,
+        boundary: str = "open",
+        metadata: dict[str, object] | None = None,
+    ) -> "ProblemSpec":
+        return cls(
+            model_family="tfim",
+            lattice=LatticeSpec(Lx=Lx, Ly=Ly, boundary=boundary),
+            parameters=ParameterSpec(values={"J": J, "h": h, "g": g}),
+            metadata=metadata or {},
+        )
+
     @property
     def Lx(self) -> int:
         return self.lattice.Lx
@@ -80,3 +99,14 @@ class ProblemSpec:
     def mu(self) -> float:
         return float(self.parameters.values["mu"])
 
+    @property
+    def J(self) -> float:
+        return float(self.parameters.values["J"])
+
+    @property
+    def h(self) -> float:
+        return float(self.parameters.values["h"])
+
+    @property
+    def g(self) -> float:
+        return float(self.parameters.values.get("g", 0.0))

@@ -5,6 +5,8 @@ from app.domain.models import (
     CreateStateRequest,
     EvolveRequest,
     ExportStateResponse,
+    GenericAnalysisResponse,
+    GenericProblemRequest,
     MeasurementLibraryResponse,
     MeasurementPlanResponse,
     MetricsSummaryResponse,
@@ -17,9 +19,11 @@ from app.domain.models import (
     TrustMetricsResponse,
 )
 from app.services.game_state import HubbardGameStateService
+from app.services.workflow import WorkflowService
 
 router = APIRouter()
 service = HubbardGameStateService()
+workflow_service = WorkflowService()
 
 
 @router.post("/state/create", response_model=ExportStateResponse)
@@ -95,3 +99,8 @@ def recommend_qprobe_plan(payload: QProbeRequest) -> MeasurementPlanResponse:
 @router.post("/qprobe/adaptive-plan", response_model=AdaptiveMeasurementPlanResponse)
 def run_adaptive_qprobe(payload: QProbeRequest) -> AdaptiveMeasurementPlanResponse:
     return service.run_adaptive_qprobe(payload)
+
+
+@router.post("/workflow/analyze", response_model=GenericAnalysisResponse)
+def analyze_workflow(payload: GenericProblemRequest) -> GenericAnalysisResponse:
+    return workflow_service.analyze(payload)

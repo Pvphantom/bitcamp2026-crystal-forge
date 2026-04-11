@@ -28,7 +28,12 @@ def compare_solver_results(
     *,
     risk_thresholds: tuple[float, float] = (0.08, 0.2),
 ) -> SolverComparison:
-    keys = ["D", "n", "Ms2", "K", "Cs_max"]
+    if problem.model_family == "hubbard":
+        keys = ["D", "n", "Ms2", "K", "Cs_max"]
+    elif problem.model_family == "tfim":
+        keys = ["Mz", "Mx", "ZZ_nn", "Mstag2", "Z_span"]
+    else:
+        raise ValueError(f"Unsupported model family for solver comparison: {problem.model_family}")
     exact = {key: float(reference.global_observables[key]) for key in keys}
     approximate = {key: float(candidate.global_observables[key]) for key in keys}
     abs_error = {key: abs(approximate[key] - exact[key]) for key in keys}

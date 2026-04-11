@@ -14,6 +14,14 @@ from app.physics.observables import (
     build_spin_correlator_maxdist,
     build_staggered_magnetization_squared,
 )
+from app.physics.tfim import (
+    build_tfim_bond_zz_operators,
+    build_tfim_mx,
+    build_tfim_mz,
+    build_tfim_staggered_mz2,
+    build_tfim_z_span,
+    build_tfim_zz_nn,
+)
 
 
 def _build_double_occ(problem: ProblemSpec) -> SparsePauliOp:
@@ -34,6 +42,26 @@ def _build_kinetic(problem: ProblemSpec) -> SparsePauliOp:
 
 def _build_cs_max(problem: ProblemSpec) -> SparsePauliOp:
     return build_spin_correlator_maxdist(problem.Lx, problem.Ly)
+
+
+def _build_tfim_mz(problem: ProblemSpec) -> SparsePauliOp:
+    return build_tfim_mz(problem.Lx, problem.Ly)
+
+
+def _build_tfim_mx(problem: ProblemSpec) -> SparsePauliOp:
+    return build_tfim_mx(problem.Lx, problem.Ly)
+
+
+def _build_tfim_zz_nn(problem: ProblemSpec) -> SparsePauliOp:
+    return build_tfim_zz_nn(problem.Lx, problem.Ly)
+
+
+def _build_tfim_staggered(problem: ProblemSpec) -> SparsePauliOp:
+    return build_tfim_staggered_mz2(problem.Lx, problem.Ly)
+
+
+def _build_tfim_z_span(problem: ProblemSpec) -> SparsePauliOp:
+    return build_tfim_z_span(problem.Lx, problem.Ly)
 
 
 @dataclass
@@ -57,6 +85,13 @@ class ObservableRegistry:
 
     def hubbard_bond_operators(self, problem: ProblemSpec) -> dict[tuple[int, int], SparsePauliOp]:
         return build_bond_spin_correlator_operators(problem.Lx, problem.Ly)
+
+    def bond_operators(self, problem: ProblemSpec) -> dict[tuple[int, int], SparsePauliOp]:
+        if problem.model_family == "hubbard":
+            return build_bond_spin_correlator_operators(problem.Lx, problem.Ly)
+        if problem.model_family == "tfim":
+            return build_tfim_bond_zz_operators(problem.Lx, problem.Ly)
+        return {}
 
 
 def build_default_observable_registry() -> ObservableRegistry:
@@ -106,5 +141,49 @@ def build_default_observable_registry() -> ObservableRegistry:
             builder=_build_cs_max,
         )
     )
+    registry.register(
+        ObservableSpec(
+            name="Mz",
+            label="Average Z magnetization",
+            description="Average longitudinal spin polarization.",
+            families=("tfim",),
+            builder=_build_tfim_mz,
+        )
+    )
+    registry.register(
+        ObservableSpec(
+            name="Mx",
+            label="Average X magnetization",
+            description="Average transverse-field alignment.",
+            families=("tfim",),
+            builder=_build_tfim_mx,
+        )
+    )
+    registry.register(
+        ObservableSpec(
+            name="ZZ_nn",
+            label="Nearest-neighbor ZZ order",
+            description="Average nearest-neighbor Ising correlation.",
+            families=("tfim",),
+            builder=_build_tfim_zz_nn,
+        )
+    )
+    registry.register(
+        ObservableSpec(
+            name="Mstag2",
+            label="Staggered Z order strength",
+            description="Squared staggered longitudinal magnetization.",
+            families=("tfim",),
+            builder=_build_tfim_staggered,
+        )
+    )
+    registry.register(
+        ObservableSpec(
+            name="Z_span",
+            label="Long-range Z link",
+            description="Longest-distance longitudinal spin correlation on the cluster.",
+            families=("tfim",),
+            builder=_build_tfim_z_span,
+        )
+    )
     return registry
-

@@ -66,6 +66,7 @@ from app.physics.state_prep import (
     prepare_product_state_circuit,
 )
 from app.analysis.solver_compare import compare_solver_results
+from app.analysis.trust_features import build_trust_feature_vector
 
 
 @dataclass
@@ -468,42 +469,7 @@ class HubbardGameStateService:
 
     def _build_trust_features(self, cheap_result) -> np.ndarray:
         assert self.problem_spec is not None
-        n_up = cheap_result.site_observables["n_up"]
-        n_dn = cheap_result.site_observables["n_dn"]
-        d_site = cheap_result.site_observables["D_site"]
-        sz_site = cheap_result.site_observables["Sz_site"]
-        abs_sz = [abs(value) for value in sz_site]
-        density = [up + dn for up, dn in zip(n_up, n_dn, strict=True)]
-        staggered_linear = 0.0
-        for idx in range(len(sz_site)):
-            x = idx % self.problem_spec.Lx
-            y = idx // self.problem_spec.Lx
-            staggered_linear += ((-1) ** (x + y)) * (n_up[idx] - n_dn[idx]) / self.problem_spec.nsites
-        return np.array(
-            [
-                float(self.problem_spec.Lx),
-                float(self.problem_spec.Ly),
-                float(self.problem_spec.nsites),
-                self.problem_spec.t,
-                self.problem_spec.U,
-                self.problem_spec.mu,
-                cheap_result.global_observables["D"],
-                cheap_result.global_observables["n"],
-                cheap_result.global_observables["Ms2"],
-                cheap_result.global_observables["K"],
-                cheap_result.global_observables["Cs_max"],
-                cheap_result.global_observables["energy"],
-                float(sum(abs_sz) / len(abs_sz)),
-                float(max(abs_sz)),
-                float(staggered_linear),
-                float(np.std(density)),
-                float(np.std(sz_site)),
-                float(np.std(d_site)),
-                1.0 if cheap_result.metadata.get("converged", False) else 0.0,
-                float(cheap_result.metadata.get("iterations", 0)),
-            ],
-            dtype=np.float32,
-        )
+        return build_trust_feature_vector(self.problem_spec, cheap_result).numpy()
 
     @staticmethod
     def _observables_from_global_map(values: dict[str, float]) -> ObservablesResponse:
