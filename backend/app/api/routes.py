@@ -1,14 +1,20 @@
 from fastapi import APIRouter
 
 from app.domain.models import (
+    AdaptiveMeasurementPlanResponse,
     CreateStateRequest,
     EvolveRequest,
     ExportStateResponse,
+    MeasurementLibraryResponse,
+    MeasurementPlanResponse,
     MetricsSummaryResponse,
     ObservablesResponse,
     PhasePredictionResponse,
     PlaceConfigurationRequest,
+    QProbeRequest,
     SetParamsRequest,
+    TrustComparisonResponse,
+    TrustMetricsResponse,
 )
 from app.services.game_state import HubbardGameStateService
 
@@ -64,3 +70,28 @@ def export_state() -> ExportStateResponse:
 @router.get("/ml/metrics", response_model=MetricsSummaryResponse)
 def get_ml_metrics() -> MetricsSummaryResponse:
     return service.get_metrics()
+
+
+@router.get("/trust/metrics", response_model=TrustMetricsResponse)
+def get_trust_metrics() -> TrustMetricsResponse:
+    return service.get_trust_metrics()
+
+
+@router.post("/trust/evaluate", response_model=TrustComparisonResponse)
+def evaluate_trust() -> TrustComparisonResponse:
+    return service.evaluate_trust()
+
+
+@router.get("/qprobe/library", response_model=MeasurementLibraryResponse)
+def get_qprobe_library() -> MeasurementLibraryResponse:
+    return service.get_qprobe_library()
+
+
+@router.post("/qprobe/recommend-plan", response_model=MeasurementPlanResponse)
+def recommend_qprobe_plan(payload: QProbeRequest) -> MeasurementPlanResponse:
+    return service.recommend_qprobe_plan(payload)
+
+
+@router.post("/qprobe/adaptive-plan", response_model=AdaptiveMeasurementPlanResponse)
+def run_adaptive_qprobe(payload: QProbeRequest) -> AdaptiveMeasurementPlanResponse:
+    return service.run_adaptive_qprobe(payload)

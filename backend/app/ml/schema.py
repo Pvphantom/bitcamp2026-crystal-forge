@@ -19,6 +19,14 @@ DEFAULT_2X2_BASE_DATASET = ARTIFACTS_DIR / "graphs_2x2_base.pt"
 DEFAULT_2X3_BASE_DATASET = ARTIFACTS_DIR / "graphs_2x3_base.pt"
 DEFAULT_MODEL_PATH = ARTIFACTS_DIR / "phase_gnn.pt"
 DEFAULT_METRICS_PATH = ARTIFACTS_DIR / "gnn_metrics.json"
+DEFAULT_QPROBE_DATASET = ARTIFACTS_DIR / "qprobe_dataset.pt"
+DEFAULT_QPROBE_MODEL_PATH = ARTIFACTS_DIR / "qprobe_mlp.pt"
+DEFAULT_QPROBE_METRICS_PATH = ARTIFACTS_DIR / "qprobe_metrics.json"
+TRUST_LABELS = ["safe", "warning", "unsafe"]
+TRUST_TO_INDEX = {label: index for index, label in enumerate(TRUST_LABELS)}
+DEFAULT_TRUST_DATASET = ARTIFACTS_DIR / "trust_dataset.pt"
+DEFAULT_TRUST_MODEL_PATH = ARTIFACTS_DIR / "trust_model.pt"
+DEFAULT_TRUST_METRICS_PATH = ARTIFACTS_DIR / "trust_metrics.json"
 
 
 @dataclass

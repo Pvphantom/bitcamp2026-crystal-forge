@@ -91,6 +91,118 @@ class MetricsSummaryResponse(BaseModel):
     cross_lattice_confusion_matrix: list[list[int]] = Field(default_factory=list)
 
 
+class TrustPredictionResponse(BaseModel):
+    available: bool
+    model_path: str
+    label: str | None = None
+    confidence: float | None = None
+    predicted_max_abs_error: float | None = None
+    recommended_action: str | None = None
+
+
+class TrustMetricsResponse(BaseModel):
+    available: bool
+    model_loaded: bool
+    metrics_path: str
+    model_path: str
+    labels: list[str] = Field(default_factory=list)
+    train_risk_accuracy: float | None = None
+    val_risk_accuracy: float | None = None
+    test_risk_accuracy: float | None = None
+    test_error_mae: float | None = None
+    test_false_safe_rate: float | None = None
+    confusion_matrix: list[list[int]] = Field(default_factory=list)
+
+
+class TrustComparisonResponse(BaseModel):
+    exact: ObservablesResponse
+    cheap_solver: ObservablesResponse
+    abs_error: dict[str, float]
+    rel_error: dict[str, float]
+    max_abs_error: float
+    energy_error: float
+    risk_label: str
+    trust_prediction: TrustPredictionResponse
+    recommended_action: str
+
+
+class QProbeRequest(BaseModel):
+    targets: list[str] = Field(default_factory=lambda: ["D", "Ms2", "Cs_max"])
+    tolerance: float = Field(default=0.03, gt=0.0)
+    shots_per_group: int = Field(default=4000, ge=1)
+    readout_flip_prob: float = Field(default=0.0, ge=0.0, le=0.5)
+    seed: int | None = None
+
+
+class MeasurementGroupResponse(BaseModel):
+    name: str
+    basis: str
+    basis_label: str
+    explanation: str
+    supports_targets: list[str] = Field(default_factory=list)
+    num_terms: int
+    cost: int
+
+
+class MeasurementLibraryResponse(BaseModel):
+    observables: dict[str, list[MeasurementGroupResponse]]
+
+
+class MLQProbePredictionResponse(BaseModel):
+    available: bool
+    model_path: str
+    predicted_cost: int | None = None
+    predicted_success: bool | None = None
+    predicted_error: float | None = None
+    matches_exact_cost: bool | None = None
+    matches_exact_success: bool | None = None
+
+
+class MeasurementPlanResponse(BaseModel):
+    success: bool
+    targets: list[str]
+    tolerance: float
+    full_cost: int
+    recommended_cost: int
+    measurement_savings: int
+    exact: dict[str, float]
+    estimated: dict[str, float]
+    abs_error: dict[str, float]
+    max_abs_error: float
+    full_groups: list[MeasurementGroupResponse]
+    recommended_groups: list[MeasurementGroupResponse]
+    ml_qprobe: MLQProbePredictionResponse
+    message: str
+
+
+class AdaptiveMeasurementStepResponse(BaseModel):
+    step_index: int
+    chosen_group: MeasurementGroupResponse
+    current_cost: int
+    estimated: dict[str, float]
+    exact: dict[str, float]
+    abs_error: dict[str, float]
+    max_abs_error: float
+    uncertainty: dict[str, float]
+    max_uncertainty: float
+
+
+class AdaptiveMeasurementPlanResponse(BaseModel):
+    success: bool
+    targets: list[str]
+    tolerance: float
+    full_cost: int
+    final_cost: int
+    measurement_savings: int
+    exact: dict[str, float]
+    estimated: dict[str, float]
+    abs_error: dict[str, float]
+    max_abs_error: float
+    max_uncertainty: float
+    steps: list[AdaptiveMeasurementStepResponse]
+    message: str
+
+
 class ExportStateResponse(BaseModel):
     lattice: LatticeSnapshot
     observables: ObservablesResponse
