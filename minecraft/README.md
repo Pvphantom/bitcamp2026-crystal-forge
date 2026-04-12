@@ -102,16 +102,18 @@ Current behavior:
    - center lattice platform
    - Hubbard pedestals or TFIM pillars
    - bond bridges
-   - right-side trust indicator
-   - rear path indicator
+   - right-side workflow wall
+   - back observables wall
+   - rear VQE/path chamber
+   - overhead QProbe ring
 
 ## Suggested next Fabric milestones
 
-1. Expand the simple workflow indicator into the full right-side workflow wall
-2. Add the full back observables wall
-3. Add the VQE chamber and overhead QProbe ring
-4. Add button-based parameter controls that resubmit the route
-5. Add animation instead of hard overwrites
+1. Replace block-only indicators with signs, text displays, or richer panels
+2. Add the left control wall for in-world parameter updates
+3. Add animation instead of hard overwrites
+4. Make the QProbe ring reflect group meaning more explicitly
+5. Add adaptive step playback and solver transition lighting
 
 ## Example request
 
@@ -152,6 +154,12 @@ can use the same mod jar or dev client as long as:
    - or `/crystalforge preset hubbard_fallback`
 6. The scene should render near:
    - `(0, 64, 0)`
+7. Current visible structures should include:
+   - central lattice
+   - right workflow wall
+   - back observables bars
+   - rear chamber
+   - overhead QProbe ring
 
 ### If another person uses the GitHub repo
 
@@ -181,12 +189,15 @@ If someone wants a different backend URL, they can override it with:
 
 ## Build notes
 
-This scaffold does not yet include a Gradle wrapper, and this machine does not
-currently have `gradle` installed. That means I set up the Fabric project
-structure and source files, but I did not run a local mod build here.
+The Fabric project now includes a Gradle wrapper.
 
-To build or run it locally, either:
+Typical local commands:
 
-- install Gradle and run it in `minecraft/`
-- or generate a Gradle wrapper in `minecraft/`
-- or import the module into IntelliJ with Fabric Loom support
+```bash
+cd minecraft
+./gradlew build
+./gradlew runClient
+```
+
+If you prefer an IDE workflow, you can also import the module into IntelliJ
+with Fabric Loom support.
