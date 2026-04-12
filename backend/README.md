@@ -16,7 +16,6 @@ The current scaffold provides:
 - Pydantic request/response models
 - placeholder `HubbardGameStateService`
 
-The next milestone is implementing the Hamiltonian and the 4 acceptance tests from the spec before adding richer endpoints.
 
 ## Run
 
