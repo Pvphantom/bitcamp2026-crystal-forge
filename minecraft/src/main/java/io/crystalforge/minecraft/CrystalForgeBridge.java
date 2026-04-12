@@ -14,13 +14,14 @@ import java.time.Duration;
 
 public final class CrystalForgeBridge {
     private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder()
+        .version(HttpClient.Version.HTTP_1_1)
         .connectTimeout(Duration.ofSeconds(3))
         .build();
 
     private CrystalForgeBridge() {
     }
 
-    public static void refresh(CrystalForgeWorkflowRequest request) {
+    public static boolean refresh(CrystalForgeWorkflowRequest request) {
         HttpRequest httpRequest = HttpRequest.newBuilder()
             .uri(URI.create(CrystalForgeConfig.backendUrl()))
             .header("Content-Type", "application/json")
@@ -32,16 +33,18 @@ public final class CrystalForgeBridge {
             HttpResponse<String> response = HTTP_CLIENT.send(httpRequest, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 CrystalForgeMod.LOGGER.error("Crystal Forge backend returned status {}: {}", response.statusCode(), response.body());
-                return;
+                return false;
             }
             JsonObject payload = JsonParser.parseString(response.body()).getAsJsonObject();
             CrystalForgePayloadStore.setLatestPayload(payload);
             CrystalForgeMod.LOGGER.info("Crystal Forge payload updated: update_id={}", payload.get("update_id").getAsInt());
+            return true;
         } catch (IOException | InterruptedException ex) {
             CrystalForgeMod.LOGGER.error("Crystal Forge backend fetch failed", ex);
             if (ex instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
+            return false;
         }
     }
 

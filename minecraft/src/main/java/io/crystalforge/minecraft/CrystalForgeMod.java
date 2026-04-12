@@ -20,7 +20,11 @@ public final class CrystalForgeMod implements ModInitializer {
                     .then(CommandManager.literal("refresh")
                         .executes(context -> {
                             context.getSource().sendFeedback(() -> Text.literal("Crystal Forge: fetching default TFIM workflow..."), false);
-                            CrystalForgeBridge.refresh(CrystalForgeRequests.tfimQuantumEscalation());
+                            boolean ok = CrystalForgeBridge.refresh(CrystalForgeRequests.tfimQuantumEscalation());
+                            if (!ok) {
+                                context.getSource().sendError(Text.literal("Crystal Forge: backend fetch failed. Check the runClient terminal and backend logs."));
+                                return 0;
+                            }
                             CrystalForgeBridge.renderLatestSummary(context.getSource());
                             return 1;
                         }))
@@ -34,7 +38,11 @@ public final class CrystalForgeMod implements ModInitializer {
                                     return 0;
                                 }
                                 context.getSource().sendFeedback(() -> Text.literal("Crystal Forge: fetching preset " + preset + "..."), false);
-                                CrystalForgeBridge.refresh(request);
+                                boolean ok = CrystalForgeBridge.refresh(request);
+                                if (!ok) {
+                                    context.getSource().sendError(Text.literal("Crystal Forge: backend fetch failed. Check the runClient terminal and backend logs."));
+                                    return 0;
+                                }
                                 CrystalForgeBridge.renderLatestSummary(context.getSource());
                                 return 1;
                             })))

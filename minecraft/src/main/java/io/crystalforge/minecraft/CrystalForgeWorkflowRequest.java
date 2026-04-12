@@ -1,4 +1,9 @@
 package io.crystalforge.minecraft;
 
-public record CrystalForgeWorkflowRequest(String jsonBody) {
+import com.google.gson.JsonObject;
+
+public record CrystalForgeWorkflowRequest(JsonObject payload) {
+    public String jsonBody() {
+        return payload.toString();
+    }
 }
