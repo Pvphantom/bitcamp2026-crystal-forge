@@ -4,7 +4,9 @@ from dataclasses import dataclass
 
 import numpy as np
 from scipy.linalg import expm
+from fastapi import HTTPException
 
+from app.analysis.qprobe_request_budget import validate_qprobe_request_budget
 from app.domain.problem_spec import ProblemSpec
 from app.domain.models import (
     AdaptiveMeasurementPlanResponse,
@@ -256,6 +258,14 @@ class HubbardGameStateService:
             target_names=payload.targets,
             observable_specs=payload.observable_specs,
         )
+        try:
+            validate_qprobe_request_budget(
+                target_names=target_names,
+                operator_map=operator_map,
+                has_custom_observables=bool(payload.observable_specs),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         measurement_library = build_measurement_library_from_operator_map(operator_map)
         support_map = group_support_map_for_targets(measurement_library, target_names)
         result = search_minimal_measurement_plan_with_operator_map(
@@ -325,6 +335,14 @@ class HubbardGameStateService:
             target_names=payload.targets,
             observable_specs=payload.observable_specs,
         )
+        try:
+            validate_qprobe_request_budget(
+                target_names=target_names,
+                operator_map=operator_map,
+                has_custom_observables=bool(payload.observable_specs),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         measurement_library = build_measurement_library_from_operator_map(operator_map)
         support_map = group_support_map_for_targets(measurement_library, target_names)
         result = search_adaptive_measurement_plan_with_operator_map(

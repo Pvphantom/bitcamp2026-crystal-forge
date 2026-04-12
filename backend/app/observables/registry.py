@@ -11,6 +11,8 @@ from app.physics.observables import (
     build_double_occ,
     build_filling,
     build_kinetic,
+    build_singlet_pair_density,
+    build_singlet_pair_span,
     build_spin_correlator_maxdist,
     build_staggered_magnetization_squared,
 )
@@ -42,6 +44,14 @@ def _build_kinetic(problem: ProblemSpec) -> SparsePauliOp:
 
 def _build_cs_max(problem: ProblemSpec) -> SparsePauliOp:
     return build_spin_correlator_maxdist(problem.Lx, problem.Ly)
+
+
+def _build_pair_nn(problem: ProblemSpec) -> SparsePauliOp:
+    return build_singlet_pair_density(problem.Lx, problem.Ly)
+
+
+def _build_pair_span(problem: ProblemSpec) -> SparsePauliOp:
+    return build_singlet_pair_span(problem.Lx, problem.Ly)
 
 
 def _build_tfim_mz(problem: ProblemSpec) -> SparsePauliOp:
@@ -139,6 +149,24 @@ def build_default_observable_registry() -> ObservableRegistry:
             description="Most distant spin-spin correlation on the cluster.",
             families=("hubbard",),
             builder=_build_cs_max,
+        )
+    )
+    registry.register(
+        ObservableSpec(
+            name="Pair_nn",
+            label="Nearest-neighbor singlet pairing",
+            description="Average nearest-neighbor singlet pair density.",
+            families=("hubbard",),
+            builder=_build_pair_nn,
+        )
+    )
+    registry.register(
+        ObservableSpec(
+            name="Pair_span",
+            label="Long-range pair coherence",
+            description="Longest-distance singlet-pair coherence on the cluster.",
+            families=("hubbard",),
+            builder=_build_pair_span,
         )
     )
     registry.register(

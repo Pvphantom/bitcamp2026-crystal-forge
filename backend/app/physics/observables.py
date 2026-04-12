@@ -105,6 +105,61 @@ def build_kinetic(Lx: int, Ly: int, t: float) -> SparsePauliOp:
     return SparsePauliOp.from_list(bond_terms).simplify()
 
 
+def _jw_ladder_operator(Nq: int, qubit: int, *, dagger: bool) -> SparsePauliOp:
+    z_prefix = ["I"] * Nq
+    for q in range(qubit):
+        z_prefix[q] = "Z"
+
+    x_pauli = z_prefix.copy()
+    y_pauli = z_prefix.copy()
+    x_pauli[qubit] = "X"
+    y_pauli[qubit] = "Y"
+
+    x_term = ("".join(x_pauli[::-1]), 0.5)
+    y_coeff = -0.5j if dagger else 0.5j
+    y_term = ("".join(y_pauli[::-1]), y_coeff)
+    return SparsePauliOp.from_list([x_term, y_term]).simplify()
+
+
+def build_annihilation_operator(Nq: int, qubit: int) -> SparsePauliOp:
+    return _jw_ladder_operator(Nq, qubit, dagger=False)
+
+
+def build_creation_operator(Nq: int, qubit: int) -> SparsePauliOp:
+    return _jw_ladder_operator(Nq, qubit, dagger=True)
+
+
+def build_singlet_pair_bond_operator(Lx: int, Ly: int, bond: tuple[int, int]) -> SparsePauliOp:
+    Ns = Lx * Ly
+    Nq = 2 * Ns
+    i, j = bond
+    ci_up = build_annihilation_operator(Nq, q_up(i))
+    cj_dn = build_annihilation_operator(Nq, q_dn(j, Ns))
+    ci_dn = build_annihilation_operator(Nq, q_dn(i, Ns))
+    cj_up = build_annihilation_operator(Nq, q_up(j))
+    return ((ci_up @ cj_dn) - (ci_dn @ cj_up)).simplify()
+
+
+def build_singlet_pair_density(Lx: int, Ly: int) -> SparsePauliOp:
+    bonds = nn_bonds(Lx, Ly)
+    pair_ops = [build_singlet_pair_bond_operator(Lx, Ly, bond) for bond in bonds]
+    pair_density = None
+    for pair_op in pair_ops:
+        density = (pair_op.adjoint() @ pair_op).simplify()
+        pair_density = density if pair_density is None else (pair_density + density).simplify()
+    assert pair_density is not None
+    return (pair_density / len(bonds)).simplify()
+
+
+def build_singlet_pair_span(Lx: int, Ly: int) -> SparsePauliOp:
+    bonds = nn_bonds(Lx, Ly)
+    pair_ops = [build_singlet_pair_bond_operator(Lx, Ly, bond) for bond in bonds]
+    if len(pair_ops) == 1:
+        return (pair_ops[0].adjoint() @ pair_ops[0]).simplify()
+    correlator = (pair_ops[0].adjoint() @ pair_ops[-1] + pair_ops[-1].adjoint() @ pair_ops[0]).simplify()
+    return (0.5 * correlator).simplify()
+
+
 def extract_site_observables_from_statevector(Lx: int, Ly: int, state: np.ndarray) -> dict[str, list[float]]:
     """Direct basis-probability evaluation for diagonal site observables."""
     Ns = Lx * Ly

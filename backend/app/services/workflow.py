@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from fastapi import HTTPException
+
+from app.analysis.qprobe_request_budget import validate_qprobe_request_budget
 from app.analysis.runtime_intrinsic_corrmap import (
     analyze_runtime_intrinsic_corrmap,
     apply_runtime_intrinsic_overlay,
@@ -98,6 +101,14 @@ class WorkflowService:
             target_names=payload.qprobe_targets,
             observable_specs=payload.qprobe_observable_specs,
         )
+        try:
+            validate_qprobe_request_budget(
+                target_names=targets,
+                operator_map=qprobe_operator_map,
+                has_custom_observables=bool(payload.qprobe_observable_specs),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         measurement_library = (
             build_measurement_library_from_operator_map(qprobe_operator_map)
             if payload.qprobe_observable_specs

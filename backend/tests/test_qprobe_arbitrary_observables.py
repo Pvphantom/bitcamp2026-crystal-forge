@@ -17,6 +17,10 @@ from app.services.game_state import HubbardGameStateService
 from app.solvers.exact_ed import ExactEDSolver
 from fastapi.testclient import TestClient
 from app.main import app
+import pytest
+
+
+client = TestClient(app)
 
 
 def _spec_from_operator(name: str, operator: SparsePauliOp) -> ObservableTargetSpecRequest:
@@ -204,3 +208,73 @@ def test_workflow_accepts_custom_qprobe_operator_on_quantum_path() -> None:
         assert body["qprobe_exact"]["targets"] == ["Mz_custom"]
     if body["qprobe_adaptive"] is not None:
         assert body["qprobe_adaptive"]["targets"] == ["Mz_custom"]
+
+
+def test_game_state_rejects_more_than_five_targets() -> None:
+    service = HubbardGameStateService()
+    with pytest.raises(Exception):
+        service.recommend_qprobe_plan(
+            QProbeRequest(
+                targets=["D", "n", "Ms2", "K", "Cs_max", "D"],
+                tolerance=0.03,
+                shots_per_group=2000,
+            )
+        )
+
+
+def test_api_rejects_too_many_qprobe_targets() -> None:
+    response = client.post(
+        "/api/qprobe/recommend-plan",
+        json={
+            "targets": ["D", "n", "Ms2", "K", "Cs_max", "D"],
+            "tolerance": 0.03,
+            "shots_per_group": 2000,
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_api_rejects_custom_operator_with_large_support() -> None:
+    response = client.post(
+        "/api/qprobe/recommend-plan",
+        json={
+            "targets": [],
+            "observable_specs": [
+                {
+                    "alias": "too_big",
+                    "pauli_terms": [
+                        {"pauli": "XXXXXXXX", "coeff_real": 1.0, "coeff_imag": 0.0},
+                    ],
+                }
+            ],
+            "tolerance": 0.03,
+            "shots_per_group": 2000,
+        },
+    )
+    assert response.status_code == 422
+    assert "support size" in response.json()["detail"]
+
+
+def test_api_rejects_custom_request_with_too_many_pauli_terms() -> None:
+    specs = []
+    for spec_idx in range(4):
+        pauli_terms = []
+        for term_idx in range(7):
+            chars = ["I"] * 8
+            a = (spec_idx + term_idx) % 8
+            b = (spec_idx * 2 + term_idx + 1) % 8
+            chars[a] = "Z" if term_idx % 2 == 0 else "X"
+            chars[b] = "X" if term_idx % 3 == 0 else "Y"
+            pauli_terms.append({"pauli": "".join(chars), "coeff_real": 0.1, "coeff_imag": 0.0})
+        specs.append({"alias": f"too_many_terms_{spec_idx}", "pauli_terms": pauli_terms})
+    response = client.post(
+        "/api/qprobe/recommend-plan",
+        json={
+            "targets": [],
+            "observable_specs": specs,
+            "tolerance": 0.03,
+            "shots_per_group": 2000,
+        },
+    )
+    assert response.status_code == 422
+    assert "Pauli terms total" in response.json()["detail"]

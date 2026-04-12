@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class CreateStateRequest(BaseModel):
@@ -160,6 +160,12 @@ class QProbeRequest(BaseModel):
     readout_flip_prob: float = Field(default=0.0, ge=0.0, le=0.5)
     seed: int | None = None
 
+    @model_validator(mode="after")
+    def validate_combined_target_budget(self) -> "QProbeRequest":
+        if len(self.targets) + len(self.observable_specs) > 5:
+            raise ValueError("QProbe requests are limited to at most 5 target operators per call")
+        return self
+
 
 class MeasurementGroupResponse(BaseModel):
     name: str
@@ -256,6 +262,12 @@ class GenericProblemRequest(BaseModel):
     qprobe_shots_per_group: int = Field(default=4000, ge=1)
     qprobe_readout_flip_prob: float = Field(default=0.0, ge=0.0, le=0.5)
     qprobe_seed: int | None = None
+
+    @model_validator(mode="after")
+    def validate_qprobe_target_budget(self) -> "GenericProblemRequest":
+        if len(self.qprobe_targets) + len(self.qprobe_observable_specs) > 5:
+            raise ValueError("Workflow QProbe requests are limited to at most 5 target operators per call")
+        return self
 
 
 class GenericSolverResultResponse(BaseModel):
