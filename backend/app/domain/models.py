@@ -191,6 +191,19 @@ class MLQProbePredictionResponse(BaseModel):
     matches_exact_success: bool | None = None
 
 
+class QProbeModelPredictionResponse(BaseModel):
+    available: bool
+    model_path: str
+    targets: list[str]
+    full_cost: int
+    predicted_cost: int | None = None
+    full_gate_cost: int | None = None
+    predicted_gate_cost: int | None = None
+    predicted_success: bool | None = None
+    predicted_error: float | None = None
+    message: str
+
+
 class MeasurementPlanResponse(BaseModel):
     success: bool
     targets: list[str]
@@ -305,6 +318,17 @@ class WorkflowDecisionResponse(BaseModel):
     measurement_mode: str
     recommendation: str
     route_label: str | None = None
+
+
+class RoutingEvaluationResponse(BaseModel):
+    model_family: str
+    lattice: dict[str, int]
+    parameters: dict[str, float]
+    available_solvers: list[str] = Field(default_factory=list)
+    selected_cheap_solver: str
+    selected_strong_solver: str | None = None
+    workflow_decision: WorkflowDecisionResponse
+    routing: GenericRoutingResponse | None = None
 
 
 class GenericAnalysisResponse(BaseModel):

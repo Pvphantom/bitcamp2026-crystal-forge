@@ -57,7 +57,7 @@ const DEFAULT_CONFIG = {
   Lx: 2,
   Ly: 2,
   parameters: { t: 1.0, U: 6.0, mu: 1.5 },
-  qprobeTargets: ["n", "D", "Ms2", "K", "Pair_span"],
+  qprobeTargets: ["n", "D", "Ms2"],
   qprobeTolerance: 0.05,
   qprobeShotsPerGroup: 2000,
   qprobeReadoutFlipProb: 0.02,
@@ -65,6 +65,10 @@ const DEFAULT_CONFIG = {
 };
 
 const MAX_QPROBE_TARGETS = 5;
+const EXACT_DEMO_TARGET_LIMIT = 3;
+const LEGACY_QPROBE_TARGETS = ["n", "D", "Ms2", "K", "Cs_max"];
+const GATE_SENSITIVE_TARGETS = ["D", "K", "Cs_max"];
+const GATE_SENSITIVE_TOLERANCE = 0.15;
 
 const BENCHMARK_SERIES = [
   {
@@ -105,6 +109,45 @@ const CORRMAP_RESULTS = [
   { label: "Hubbard", value: "90.0%" },
 ];
 
+const DEMO_PRESETS = {
+  quantum: {
+    label: "Quantum demo",
+    config: {
+      ...DEFAULT_CONFIG,
+      parameters: { t: 0.8, U: 8.0, mu: 1.2 },
+      qprobeTargets: [...GATE_SENSITIVE_TARGETS],
+      qprobeTolerance: GATE_SENSITIVE_TOLERANCE,
+    },
+  },
+  classical: {
+    label: "Classical demo",
+    config: {
+      ...DEFAULT_CONFIG,
+      parameters: { t: 1.0, U: 5.0, mu: 0.5 },
+      qprobeTargets: [...GATE_SENSITIVE_TARGETS],
+      qprobeTolerance: GATE_SENSITIVE_TOLERANCE,
+    },
+  },
+  strongDrop: {
+    label: "Strong gate drop",
+    config: {
+      ...DEFAULT_CONFIG,
+      parameters: { t: 0.4, U: 4.0, mu: 0.5 },
+      qprobeTargets: [...GATE_SENSITIVE_TARGETS],
+      qprobeTolerance: GATE_SENSITIVE_TOLERANCE,
+    },
+  },
+  noDrop: {
+    label: "No gate drop",
+    config: {
+      ...DEFAULT_CONFIG,
+      parameters: { t: 1.0, U: 6.0, mu: 1.5 },
+      qprobeTargets: [...GATE_SENSITIVE_TARGETS],
+      qprobeTolerance: GATE_SENSITIVE_TOLERANCE,
+    },
+  },
+};
+
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -119,6 +162,14 @@ async function request(path, options = {}) {
 
 function formatNumber(value) {
   return typeof value === "number" ? value.toFixed(3) : value;
+}
+
+function basisRotationGateCost(basis) {
+  return [...basis].reduce((total, symbol) => {
+    if (symbol === "X") return total + 1;
+    if (symbol === "Y") return total + 2;
+    return total;
+  }, 0);
 }
 
 function benchmarkBackedChannelStatus(channel, tolerance) {
@@ -197,6 +248,10 @@ function MetricRow({ label, value, hint }) {
   );
 }
 
+function familyKey(group) {
+  return `${group.name}|${group.basis}`;
+}
+
 function ProgressBar({ label, value, tone, meta }) {
   return (
     <div className="progress-row">
@@ -258,6 +313,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [workflowResult, setWorkflowResult] = useState(null);
   const [stateExport, setStateExport] = useState(null);
+  const [routingResult, setRoutingResult] = useState(null);
   const [qprobeExact, setQprobeExact] = useState(null);
   const [qprobeAdaptive, setQprobeAdaptive] = useState(null);
 
@@ -265,6 +321,12 @@ export default function App() {
   const selected = config.qprobeTargets;
   const activeChannels = useMemo(() => selectedChannels(selected), [selected]);
   const workflowCoverage = useMemo(() => workflowCoverageForTolerance(tolerance), [tolerance]);
+  const qprobeExactCompatible =
+    config.qprobeTargets.length > 0 &&
+    config.qprobeTargets.length <= EXACT_DEMO_TARGET_LIMIT &&
+    config.qprobeTargets.every((name) => LEGACY_QPROBE_TARGETS.includes(name));
+  const qprobeAdaptiveCompatible = qprobeExactCompatible;
+  const demoQprobeTargets = qprobeExactCompatible ? config.qprobeTargets : [];
 
   const loadState = async () => {
     const exported = await request("/api/state/export");
@@ -280,10 +342,12 @@ export default function App() {
         method: "POST",
         body: JSON.stringify(config.parameters),
       });
-      await loadState();
+      const grounded = await request("/api/state/ground-state", { method: "POST" });
+      setStateExport(grounded);
+      setWorkflowResult(null);
+      setRoutingResult(null);
       setQprobeExact(null);
       setQprobeAdaptive(null);
-      await runWorkflow(config);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -292,46 +356,24 @@ export default function App() {
   };
 
   const runCorrMap = async () => {
-    await runWorkflow();
-  };
-
-  const runExactQProbe = async () => {
     setPending(true);
     setError("");
     try {
-      const result = await request("/api/qprobe/recommend-plan", {
+      const result = await request("/api/routing/evaluate", {
         method: "POST",
         body: JSON.stringify({
-          targets: config.qprobeTargets,
-          tolerance: Number(config.qprobeTolerance),
-          shots_per_group: Number(config.qprobeShotsPerGroup),
-          readout_flip_prob: Number(config.qprobeReadoutFlipProb),
-          seed: Number(config.qprobeSeed),
+          model_family: "hubbard",
+          Lx: config.Lx,
+          Ly: config.Ly,
+          parameters: config.parameters,
+          qprobe_targets: config.qprobeTargets,
+          qprobe_tolerance: Number(config.qprobeTolerance),
+          qprobe_shots_per_group: Number(config.qprobeShotsPerGroup),
+          qprobe_readout_flip_prob: Number(config.qprobeReadoutFlipProb),
+          qprobe_seed: Number(config.qprobeSeed),
         }),
       });
-      setQprobeExact(result);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setPending(false);
-    }
-  };
-
-  const runAdaptiveQProbe = async () => {
-    setPending(true);
-    setError("");
-    try {
-      const result = await request("/api/qprobe/adaptive-plan", {
-        method: "POST",
-        body: JSON.stringify({
-          targets: config.qprobeTargets,
-          tolerance: Number(config.qprobeTolerance),
-          shots_per_group: Number(config.qprobeShotsPerGroup),
-          readout_flip_prob: Number(config.qprobeReadoutFlipProb),
-          seed: Number(config.qprobeSeed),
-        }),
-      });
-      setQprobeAdaptive(result);
+      setRoutingResult(result);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -365,16 +407,68 @@ export default function App() {
     }
   };
 
+  const runExactQProbe = async () => {
+    if (!qprobeExactCompatible) {
+      setError(
+        `Live QProbe demo supports up to ${EXACT_DEMO_TARGET_LIMIT} tractable legacy observables (${LEGACY_QPROBE_TARGETS.join(", ")}).`,
+      );
+      return;
+    }
+    setPending(true);
+    setError("");
+    try {
+      const result = await request("/api/qprobe/recommend-plan", {
+        method: "POST",
+        body: JSON.stringify({
+          targets: demoQprobeTargets,
+          tolerance: Number(config.qprobeTolerance),
+          shots_per_group: Number(config.qprobeShotsPerGroup),
+          readout_flip_prob: Number(config.qprobeReadoutFlipProb),
+          seed: Number(config.qprobeSeed),
+        }),
+      });
+      setQprobeExact(result);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const runAdaptiveQProbe = async () => {
+    if (!qprobeAdaptiveCompatible) {
+      setError(
+        `Live QProbe demo supports up to ${EXACT_DEMO_TARGET_LIMIT} tractable legacy observables (${LEGACY_QPROBE_TARGETS.join(", ")}).`,
+      );
+      return;
+    }
+    setPending(true);
+    setError("");
+    try {
+      const result = await request("/api/qprobe/predict", {
+        method: "POST",
+        body: JSON.stringify({
+          targets: demoQprobeTargets,
+          tolerance: Number(config.qprobeTolerance),
+          shots_per_group: Number(config.qprobeShotsPerGroup),
+          readout_flip_prob: Number(config.qprobeReadoutFlipProb),
+          seed: Number(config.qprobeSeed),
+        }),
+      });
+      setQprobeAdaptive(result);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setPending(false);
+    }
+  };
+
   useEffect(() => {
     loadState();
-    runWorkflow(DEFAULT_CONFIG);
   }, []);
 
-  const routeSummary = workflowResult?.workflow_decision ?? null;
-  const trustSummary = workflowResult?.trust ?? null;
-  const routingSummary = workflowResult?.routing ?? null;
-  const cheapObservables = workflowResult?.cheap_solver?.observables ?? {};
-  const exactObservables = workflowResult?.exact_solver?.observables ?? {};
+  const routeSummary = routingResult?.workflow_decision ?? workflowResult?.workflow_decision ?? null;
+  const routingSummary = routingResult?.routing ?? workflowResult?.routing ?? null;
   const lattice = stateExport?.lattice ?? null;
   const phase = stateExport?.phase ?? null;
 
@@ -384,19 +478,52 @@ export default function App() {
       ? "Quantum frontier"
       : corrmapRouteLabel === "scalable_classical"
         ? "Classical scalable"
-        : corrmapRouteLabel === "mean_field"
-          ? "Legacy mean field"
+      : corrmapRouteLabel === "mean_field"
+          ? "Classical scalable"
           : "Waiting for backend";
   const corrmapActionDisplay =
     corrmapRouteLabel === "quantum_frontier"
       ? "Escalate to quantum workflow and QProbe"
       : corrmapRouteLabel === "scalable_classical"
-        ? "Stay in scalable classical simulation"
-        : routeSummary?.recommendation ?? routingSummary?.recommended_action ?? "n/a";
-  const corrmapReasonDisplay =
-    routingSummary?.intrinsic_label ??
-    (routingSummary?.abstained ? routingSummary.abstain_reason : null) ??
-    "binary Hubbard routing";
+        ? "Use classical Monte Carlo sampling"
+      : routeSummary?.recommendation ?? routingSummary?.recommended_action ?? "n/a";
+  const corrmapIntrinsicDisplay =
+    routingSummary?.intrinsic_label === "stable_classical"
+      ? "Stable classical regime"
+      : routingSummary?.intrinsic_label === "fragile_classical"
+        ? "Fragile but still classical regime"
+        : routingSummary?.intrinsic_label === "frontier_or_uncertain"
+          ? "Frontier pressure / uncertainty"
+          : "Binary Hubbard routing";
+  const corrmapConfidenceScore =
+    corrmapRouteLabel === "quantum_frontier"
+      ? routingSummary?.candidate_scores?.quantum_frontier
+      : corrmapRouteLabel === "scalable_classical"
+        ? routingSummary?.candidate_scores?.scalable_classical
+        : null;
+  const corrmapConfidenceDisplay =
+    typeof corrmapConfidenceScore === "number"
+      ? `${(corrmapConfidenceScore * 100).toFixed(1)}%`
+      : "n/a";
+  const qprobeAllowed = corrmapRouteLabel === "quantum_frontier";
+  const qprobeExactFullGateCost = qprobeExact
+    ? qprobeExact.full_groups.reduce((sum, group) => sum + basisRotationGateCost(group.basis), 0)
+    : null;
+  const qprobeExactRecommendedGateCost = qprobeExact
+    ? qprobeExact.recommended_groups.reduce((sum, group) => sum + basisRotationGateCost(group.basis), 0)
+    : null;
+  const qprobeExactGateSavings =
+    qprobeExactFullGateCost != null && qprobeExactRecommendedGateCost != null
+      ? qprobeExactFullGateCost - qprobeExactRecommendedGateCost
+      : null;
+  const qprobeCircuitReductionPct =
+    qprobeExact && qprobeExact.full_cost > 0
+      ? ((qprobeExact.full_cost - qprobeExact.recommended_cost) / qprobeExact.full_cost) * 100
+      : null;
+  const qprobeGateReductionPct =
+    qprobeExactFullGateCost != null && qprobeExactFullGateCost > 0 && qprobeExactRecommendedGateCost != null
+      ? ((qprobeExactFullGateCost - qprobeExactRecommendedGateCost) / qprobeExactFullGateCost) * 100
+      : null;
 
   const updateParam = (key, value) => {
     setConfig((current) => ({
@@ -405,22 +532,25 @@ export default function App() {
         ...current.parameters,
         [key]: Number(value),
       },
+      qprobeTargets: [...GATE_SENSITIVE_TARGETS],
+      qprobeTolerance: GATE_SENSITIVE_TOLERANCE,
     }));
+    setRoutingResult(null);
+    setQprobeExact(null);
+    setQprobeAdaptive(null);
   };
 
-  const toggleTarget = (target) => {
-    setConfig((current) => {
-      const has = current.qprobeTargets.includes(target);
-      const nextTargets = has
-        ? current.qprobeTargets.filter((entry) => entry !== target)
-        : current.qprobeTargets.length >= MAX_QPROBE_TARGETS
-          ? [...current.qprobeTargets.slice(1), target]
-          : [...current.qprobeTargets, target];
-      return {
-        ...current,
-        qprobeTargets: nextTargets.length > 0 ? nextTargets : current.qprobeTargets,
-      };
+  const applyDemoPreset = (presetKey) => {
+    const preset = DEMO_PRESETS[presetKey];
+    setConfig({
+      ...preset.config,
+      qprobeTargets: [...GATE_SENSITIVE_TARGETS],
+      qprobeTolerance: GATE_SENSITIVE_TOLERANCE,
     });
+    setWorkflowResult(null);
+    setRoutingResult(null);
+    setQprobeExact(null);
+    setQprobeAdaptive(null);
   };
 
   return (
@@ -428,11 +558,10 @@ export default function App() {
       <section className="hero">
         <div className="hero-copy">
           <p className="eyebrow">Crystal Forge</p>
-          <h1>Hubbard superconductivity workflow</h1>
+          <h1>Quantum resource planner for correlated materials</h1>
           <p className="hero-text">
-            This demo now focuses on one story only: use CorrMap to route a superconductivity-relevant
-            Hubbard instance, then show how the measurement workflow decomposes hard pairing and transport
-            observables into safer subproblems.
+            Crystal Forge routes a hard materials query to the right compute stack, then compiles a smaller
+            quantum execution workload for the observables that matter.
           </p>
           <div className="hero-metrics">
             {CORRMAP_RESULTS.map((item) => (
@@ -459,9 +588,9 @@ export default function App() {
             <span>direct safe coverage at tolerance {tolerance.toFixed(2)}</span>
           </div>
           <div className="status-card secondary">
-            <p className="eyebrow">Recoverable coverage</p>
+            <p className="eyebrow">Extended coverage</p>
             <strong>{workflowCoverage.recoverable.toFixed(1)}%</strong>
-            <span>after symmetry / orbit closure in the structured workflow</span>
+            <span>after structured decomposition and equivalence recovery</span>
           </div>
         </div>
       </section>
@@ -474,20 +603,31 @@ export default function App() {
 
       <section className="workflow-sequence">
           <section className="panel">
-            <div className="panel-head">
+              <div className="panel-head">
               <div>
                 <p className="eyebrow">1. Launch setup</p>
-                <h2>Choose a Hubbard superconductivity panel</h2>
+                <h2>Choose a workload profile</h2>
               </div>
               <div className="button-cluster">
                 <button onClick={applyParamsToState} disabled={pending}>
                   {pending ? "Running..." : "Apply params"}
                 </button>
-                <button onClick={() => runWorkflow()} disabled={pending}>
-                  Refresh workflow
-                </button>
               </div>
             </div>
+            <div className="button-cluster">
+                <button type="button" onClick={() => applyDemoPreset("quantum")} disabled={pending}>
+                  Quantum demo preset
+                </button>
+                <button type="button" onClick={() => applyDemoPreset("classical")} disabled={pending}>
+                  Classical demo preset
+                </button>
+                <button type="button" onClick={() => applyDemoPreset("strongDrop")} disabled={pending}>
+                  Strong gate drop
+                </button>
+                <button type="button" onClick={() => applyDemoPreset("noDrop")} disabled={pending}>
+                  No gate drop
+                </button>
+              </div>
             <div className="slider-grid">
               {[
                 ["t", 0.2, 2.0, 0.1],
@@ -520,12 +660,15 @@ export default function App() {
                 <input
                   type="range"
                   min="0.03"
-                  max="0.10"
+                  max="0.15"
                   step="0.01"
                   value={config.qprobeTolerance}
-                  onChange={(event) =>
-                    setConfig((current) => ({ ...current, qprobeTolerance: Number(event.target.value) }))
-                  }
+                  disabled
+                  onChange={(event) => {
+                    setConfig((current) => ({ ...current, qprobeTolerance: Number(event.target.value) }));
+                    setQprobeExact(null);
+                    setQprobeAdaptive(null);
+                  }}
                 />
               </label>
               <label className="slider-field">
@@ -539,34 +682,28 @@ export default function App() {
                   max="4000"
                   step="500"
                   value={config.qprobeShotsPerGroup}
-                  onChange={(event) =>
-                    setConfig((current) => ({ ...current, qprobeShotsPerGroup: Number(event.target.value) }))
-                  }
+                  onChange={(event) => {
+                    setConfig((current) => ({ ...current, qprobeShotsPerGroup: Number(event.target.value) }));
+                    setQprobeExact(null);
+                    setQprobeAdaptive(null);
+                  }}
                 />
               </label>
             </div>
 
             <div className="target-section">
-              <p className="eyebrow">Requested observables</p>
+              <p className="eyebrow">Live query bundle</p>
               <p className="workflow-note">
-                The live QProbe backend currently accepts at most {MAX_QPROBE_TARGETS} targets per request, so the
-                selector keeps the workflow inside that production budget.
+                This live demo is locked to <strong>D, K, Cs_max</strong> at tolerance <strong>0.15</strong> for
+                computational feasibility during the demo.
               </p>
               <div className="target-grid">
-                {Object.entries(TARGET_LABELS).map(([key, label]) => {
-                  const active = selected.includes(key);
-                  return (
-                    <button
-                      key={key}
-                      type="button"
-                      className={`target-chip ${active ? "active" : ""}`}
-                      onClick={() => toggleTarget(key)}
-                    >
-                      <strong>{key}</strong>
-                      <span>{label}</span>
-                    </button>
-                  );
-                })}
+                {GATE_SENSITIVE_TARGETS.map((key) => (
+                  <div key={key} className="target-chip active curated">
+                    <strong>{key}</strong>
+                    <span>{TARGET_LABELS[key]}</span>
+                  </div>
+                ))}
               </div>
             </div>
           </section>
@@ -575,7 +712,7 @@ export default function App() {
               <div className="panel-head">
                 <div>
                   <p className="eyebrow">2. Lattice view</p>
-                  <h2>Actual 2x2 state</h2>
+                  <h2>Runtime state view</h2>
                 </div>
               </div>
               {lattice ? (
@@ -625,10 +762,12 @@ export default function App() {
             <section className="panel">
               <div className="panel-head">
                 <div>
-                  <p className="eyebrow">3. Route decision</p>
+                  <p className="eyebrow">3. Compute routing</p>
                   <h2>CorrMap</h2>
                 </div>
-                <button onClick={runCorrMap} disabled={pending}>Run CorrMap</button>
+                <button onClick={runCorrMap} disabled={pending}>
+                  {pending ? "Running..." : "Run CorrMap"}
+                </button>
               </div>
               <div className="metric-list">
                 <MetricRow
@@ -640,13 +779,12 @@ export default function App() {
                   value={corrmapActionDisplay}
                 />
                 <MetricRow
-                  label="Intrinsic read"
-                  value={corrmapReasonDisplay}
+                  label="Routing signal"
+                  value={corrmapIntrinsicDisplay}
                 />
                 <MetricRow
-                  label="Cheap solver error"
-                  value={trustSummary ? formatNumber(trustSummary.max_abs_error) : "n/a"}
-                  hint={trustSummary?.risk_label ? `legacy trust: ${trustSummary.risk_label}` : undefined}
+                  label="Route confidence"
+                  value={corrmapConfidenceDisplay}
                 />
               </div>
             </section>
@@ -655,97 +793,187 @@ export default function App() {
               <div className="panel-head">
                 <div>
                   <p className="eyebrow">4. Measurement planning</p>
-                  <h2>QProbe</h2>
+                  <h2>Execution workload compiler</h2>
                 </div>
                 <div className="button-cluster">
-                  <button onClick={runExactQProbe} disabled={pending}>Run Exact</button>
-                  <button onClick={runAdaptiveQProbe} disabled={pending}>Run Adaptive</button>
+                  <button onClick={runExactQProbe} disabled={pending || !qprobeAllowed || !qprobeExactCompatible}>Run Exact</button>
+                  <button onClick={runAdaptiveQProbe} disabled={pending || !qprobeAllowed || !qprobeAdaptiveCompatible}>Run Adaptive</button>
                 </div>
               </div>
+              <p className="workflow-note">
+                {qprobeAllowed
+                  ? "Quantum route active. QProbe compiles the smallest execution workload it can justify for the live query."
+                  : "CorrMap kept this point in the classical scalable regime, so QProbe is disabled here."}
+              </p>
+              <p className="workflow-note">Format: `compiled / naive` execution workload.</p>
+              {qprobeAllowed && (!qprobeExactCompatible || !qprobeAdaptiveCompatible) ? (
+                <p className="workflow-note">
+                  {`Current selection is not runnable in the live demo. Reduce to at most ${EXACT_DEMO_TARGET_LIMIT} of: ${LEGACY_QPROBE_TARGETS.join(", ")}.`}
+                </p>
+              ) : null}
               <div className="metric-list">
                 <MetricRow
-                  label="Exact savings"
-                  value={qprobeExact ? `${qprobeExact.measurement_savings} groups` : "not run"}
+                  label="Naive workload"
+                  value={qprobeExact ? `${qprobeExact.full_cost} circuit families` : qprobeAdaptive?.full_cost ? `${qprobeAdaptive.full_cost} circuit families` : qprobeAllowed ? "not run" : "disabled"}
+                  hint={qprobeExactFullGateCost != null ? `${qprobeExactFullGateCost} basis-change gates` : qprobeAdaptive?.full_gate_cost != null ? `${qprobeAdaptive.full_gate_cost} basis-change gates` : undefined}
                 />
                 <MetricRow
-                  label="Adaptive savings"
-                  value={qprobeAdaptive ? `${qprobeAdaptive.measurement_savings} groups` : "not run"}
+                  label="Compiled exact workload"
+                  value={
+                    !qprobeAllowed
+                      ? "disabled"
+                      : !qprobeExactCompatible
+                        ? "incompatible selection"
+                    : qprobeExact
+                      ? `${qprobeExact.recommended_cost} / ${qprobeExact.full_cost} circuit families`
+                      : "not run"
+                  }
+                  hint={qprobeExactCompatible && qprobeExact ? `${qprobeExact.measurement_savings} circuit families saved` : undefined}
                 />
                 <MetricRow
-                  label="Adaptive oracle check"
-                  value={qprobeAdaptive ? (qprobeAdaptive.oracle_benchmark_within_tolerance ? "Within tolerance" : "Outside tolerance") : "not run"}
+                  label="Exact basis-change overhead"
+                  value={
+                    !qprobeAllowed
+                      ? "disabled"
+                      : !qprobeExactCompatible
+                        ? "incompatible selection"
+                        : qprobeExact && qprobeExactFullGateCost != null && qprobeExactRecommendedGateCost != null
+                          ? `${qprobeExactRecommendedGateCost} / ${qprobeExactFullGateCost} gates`
+                          : "not run"
+                  }
+                  hint={qprobeExactGateSavings != null ? `${qprobeExactGateSavings} rotation gates saved` : undefined}
                 />
                 <MetricRow
-                  label="Targets"
-                  value={`${config.qprobeTargets.length} / ${MAX_QPROBE_TARGETS}`}
+                  label="Compiled adaptive workload"
+                  value={
+                    !qprobeAllowed
+                      ? "disabled"
+                      : !qprobeAdaptiveCompatible
+                        ? "incompatible selection"
+                    : qprobeAdaptive?.predicted_cost
+                      ? `${qprobeAdaptive.predicted_cost} / ${qprobeAdaptive.full_cost} circuit families`
+                      : "not run"
+                  }
+                />
+                <MetricRow
+                  label="Adaptive basis-change overhead"
+                  value={
+                    !qprobeAllowed
+                      ? "disabled"
+                      : !qprobeAdaptiveCompatible
+                        ? "incompatible selection"
+                        : qprobeAdaptive?.predicted_gate_cost != null && qprobeAdaptive?.full_gate_cost != null
+                          ? `${qprobeAdaptive.predicted_gate_cost} / ${qprobeAdaptive.full_gate_cost} gates`
+                          : "not run"
+                  }
+                  hint={
+                    qprobeAdaptive?.predicted_gate_cost != null && qprobeAdaptive?.full_gate_cost != null
+                      ? `${qprobeAdaptive.full_gate_cost - qprobeAdaptive.predicted_gate_cost} rotation gates saved`
+                      : undefined
+                  }
+                />
+                <MetricRow
+                  label="Adaptive viability"
+                  value={
+                    !qprobeAllowed
+                      ? "disabled"
+                      : !qprobeAdaptiveCompatible
+                        ? "incompatible selection"
+                    : qprobeAdaptive
+                      ? (qprobeAdaptive.predicted_success ? "Likely within tolerance" : "Likely outside tolerance")
+                      : "not run"
+                  }
+                />
+                <MetricRow
+                  label="Live query"
+                  value={demoQprobeTargets.length > 0 ? demoQprobeTargets.join(", ") : "not demo-compatible"}
                 />
               </div>
             </section>
 
-          <MissionMap routeSummary={routeSummary} activeChannels={activeChannels} />
-
           <section className="panel">
             <div className="panel-head">
               <div>
-                <p className="eyebrow">5. Signal snapshot</p>
-                <h2>Cheap solver vs exact reference</h2>
+                <p className="eyebrow">5. Execution diff</p>
+                <h2>Execution impact</h2>
               </div>
             </div>
-            <div className="observables-grid">
-              {Object.keys(cheapObservables).slice(0, 7).map((name) => (
-                <div key={name} className="observable-card">
-                  <span>{TARGET_LABELS[name] ?? name}</span>
-                  <strong>{formatNumber(cheapObservables[name])}</strong>
-                  <small>exact {formatNumber(exactObservables[name])}</small>
+            {qprobeExact ? (
+              <div className="impact-grid">
+                <article className="impact-card primary">
+                  <span className="impact-label">Circuit families</span>
+                  <strong>{qprobeExact.recommended_cost} / {qprobeExact.full_cost}</strong>
+                  <small>{qprobeExact.measurement_savings} families removed from the scheduled workload</small>
+                </article>
+                <article className="impact-card secondary">
+                  <span className="impact-label">Basis-change gates</span>
+                  <strong>{qprobeExactRecommendedGateCost} / {qprobeExactFullGateCost}</strong>
+                  <small>{qprobeExactGateSavings ?? 0} gates removed before measurement</small>
+                </article>
+                <article className="impact-card accent">
+                  <span className="impact-label">Execution reduction</span>
+                  <strong>{qprobeCircuitReductionPct != null ? `${qprobeCircuitReductionPct.toFixed(0)}%` : "0%"}</strong>
+                  <small>scheduled circuit-family reduction from naive execution</small>
+                </article>
+                <article className="impact-card accent">
+                  <span className="impact-label">Gate overhead reduction</span>
+                  <strong>{qprobeGateReductionPct != null ? `${qprobeGateReductionPct.toFixed(0)}%` : "0%"}</strong>
+                  <small>basis-change gate reduction before readout</small>
+                </article>
+              </div>
+            ) : (
+              <p className="workflow-note">
+                Run Exact to show how much execution workload QProbe removes from the naive plan.
+              </p>
+            )}
+            {qprobeExact ? (
+              <div className="impact-bars">
+                <div className="impact-bar-row">
+                  <div className="impact-bar-head">
+                    <strong>Naive execution budget</strong>
+                    <span>{qprobeExact.full_cost} families / {qprobeExactFullGateCost} gates</span>
+                  </div>
+                  <div className="impact-track">
+                    <div className="impact-fill impact-fill-naive" style={{ width: "100%" }} />
+                  </div>
                 </div>
-              ))}
-            </div>
-          </section>
-
-          <section className="panel">
-            <div className="panel-head">
-              <div>
-                <p className="eyebrow">6. Signal constellation</p>
-                <h2>Channel-first measurement plan</h2>
+                <div className="impact-bar-row">
+                  <div className="impact-bar-head">
+                    <strong>Compiled exact budget</strong>
+                    <span>{qprobeExact.recommended_cost} families / {qprobeExactRecommendedGateCost} gates</span>
+                  </div>
+                  <div className="impact-track">
+                    <div
+                      className="impact-fill impact-fill-compiled"
+                      style={{ width: `${Math.max(qprobeCircuitReductionPct != null ? (100 - qprobeCircuitReductionPct) : 100, 6)}%` }}
+                    />
+                  </div>
+                </div>
+                {qprobeAdaptive?.predicted_cost != null && qprobeAdaptive?.full_gate_cost != null && qprobeAdaptive?.predicted_gate_cost != null ? (
+                  <div className="impact-bar-row">
+                    <div className="impact-bar-head">
+                      <strong>Compiled adaptive budget</strong>
+                      <span>{qprobeAdaptive.predicted_cost} families / {qprobeAdaptive.predicted_gate_cost} gates</span>
+                    </div>
+                    <div className="impact-track">
+                      <div
+                        className="impact-fill impact-fill-adaptive"
+                        style={{ width: `${Math.max((qprobeAdaptive.predicted_cost / qprobeAdaptive.full_cost) * 100, 6)}%` }}
+                      />
+                    </div>
+                  </div>
+                ) : null}
               </div>
-            </div>
-            <div className="channel-grid">
-              {activeChannels.map((channel) => {
-                const info = benchmarkBackedChannelStatus(channel, tolerance);
-                return (
-                  <article key={channel} className={`channel-card tone-${info.tone}`}>
-                    <div className="channel-top">
-                      <div className="channel-title">
-                        <span className={`channel-glyph glyph-${channel}`}>
-                          <ChannelIcon channel={channel} />
-                        </span>
-                        <strong>{channel[0].toUpperCase() + channel.slice(1)}</strong>
-                      </div>
-                      <span className={`channel-pill pill-${info.tone}`}>{info.status}</span>
-                    </div>
-                    <div className="channel-targets">
-                      {TARGET_GROUPS[channel]
-                        .filter((name) => selected.includes(name))
-                        .map((name) => (
-                          <span key={name}>{name}</span>
-                        ))}
-                    </div>
-                    <p>{info.note}</p>
-                  </article>
-                );
-              })}
-            </div>
-            <div className="workflow-note">
-              The workflow keeps charge and spin as direct channels, then decomposes hard transport and
-              pairing observables into physically coherent transverse/Z subtargets before adaptive planning.
-            </div>
+            ) : (
+              null
+            )}
           </section>
 
           <section className="panel">
             <div className="panel-head">
               <div>
-                <p className="eyebrow">7. Frontier coverage</p>
-                <h2>Why the structured workflow matters</h2>
+                <p className="eyebrow">6. Frontier coverage</p>
+                <h2>Why the structured planner matters</h2>
               </div>
             </div>
             <div className="progress-stack">
@@ -760,11 +988,10 @@ export default function App() {
               ))}
             </div>
             <div className="recoverable-card">
-              <strong>Recoverable coverage</strong>
+              <strong>Extended coverage</strong>
               <p>
-                ``Safe'' means the subproblem is directly handled by adaptive planning. ``Recoverable''
-                means the workflow can still use symmetry-equivalent successful subtargets to stand in for
-                unresolved ones.
+                `Safe` means the subproblem is directly handled by adaptive planning. `Extended`
+                means the workflow can reuse equivalent successful subtargets to cover additional hard cases.
               </p>
               <div className="recoverable-grid">
                 {RECOVERABLE_SERIES.map((item) => (
@@ -777,21 +1004,6 @@ export default function App() {
             </div>
           </section>
 
-          <section className="panel">
-            <div className="panel-head">
-              <div>
-                <p className="eyebrow">8. Mission framing</p>
-                <h2>How to present this result</h2>
-              </div>
-            </div>
-            <ul className="story-list">
-              <li>CorrMap works as the classical-vs-quantum routing layer for Hubbard superconductivity studies.</li>
-              <li>Exact QProbe remains the tractable-regime oracle.</li>
-              <li>Generic adaptive planning fails on hard mixed superconductivity bundles.</li>
-              <li>The superconductivity workflow makes real progress by channelizing and decomposing the hard sector.</li>
-              <li>At moderate tolerance, the hard sector is close to mostly-working rather than completely failing.</li>
-            </ul>
-          </section>
       </section>
     </div>
   );

@@ -18,6 +18,7 @@ from app.domain.models import (
     GenericAnalysisResponse,
     GenericRoutingResponse,
     GenericProblemRequest,
+    RoutingEvaluationResponse,
     GenericSolverResultResponse,
     GenericTrustResponse,
     MeasurementGroupResponse,
@@ -115,8 +116,8 @@ class WorkflowService:
             else build_measurement_library_for_problem(problem, registry=self.observable_registry)
         )
         qprobe_support_map = group_support_map_for_targets(measurement_library, targets)
-        if escalation_triggered and strong is not None:
-            measurement_state_result = strong
+        if escalation_triggered:
+            measurement_state_result = strong if strong is not None else exact
             measurement_state_solver = measurement_state_result.solver_name
             qprobe_exact = search_minimal_measurement_plan_with_operator_map(
                 state=measurement_state_result.statevector,
@@ -214,6 +215,48 @@ class WorkflowService:
             ),
             qprobe_exact=qprobe_exact_response,
             qprobe_adaptive=qprobe_adaptive_response,
+        )
+
+    def evaluate_routing(self, payload: GenericProblemRequest) -> RoutingEvaluationResponse:
+        problem = self._build_problem(payload)
+        available_solvers = self.solver_registry.available_for(problem)
+        cheap_solver_name = "mean_field" if problem.model_family == "hubbard" else "tfim_mean_field"
+        cheap = self.solver_registry.get(cheap_solver_name).solve(problem)
+        strong_solver_name = "vqe" if self.solver_registry.supports("vqe", problem) else None
+        strong = self.solver_registry.get(strong_solver_name).solve(problem) if strong_solver_name else None
+        routing = self._routing_response(problem, cheap)
+        route_label = (
+            routing.route_label
+            if routing is not None and not routing.abstained
+            else ("quantum_frontier" if strong is not None else "scalable_classical")
+        )
+        (
+            escalation_triggered,
+            active_solver,
+            measurement_mode,
+            recommendation,
+        ) = self._workflow_decision_from_route(
+            route_label=route_label,
+            cheap_solver_name=cheap.solver_name,
+            strong_solver_name=strong.solver_name if strong is not None else None,
+            exact_solver_name="exact_ed",
+            model_family=problem.model_family,
+        )
+        return RoutingEvaluationResponse(
+            model_family=problem.model_family,
+            lattice={"Lx": problem.Lx, "Ly": problem.Ly},
+            parameters=dict(problem.parameters.values),
+            available_solvers=available_solvers,
+            selected_cheap_solver=cheap_solver_name,
+            selected_strong_solver=strong_solver_name,
+            workflow_decision=WorkflowDecisionResponse(
+                escalation_triggered=escalation_triggered,
+                active_solver=active_solver,
+                measurement_mode=measurement_mode,
+                recommendation=recommendation,
+                route_label=route_label,
+            ),
+            routing=routing,
         )
 
     @staticmethod

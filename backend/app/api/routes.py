@@ -14,6 +14,8 @@ from app.domain.models import (
     PhasePredictionResponse,
     PlaceConfigurationRequest,
     QProbeRequest,
+    QProbeModelPredictionResponse,
+    RoutingEvaluationResponse,
     SetParamsRequest,
     TrustComparisonResponse,
     TrustMetricsResponse,
@@ -86,6 +88,11 @@ def evaluate_trust() -> TrustComparisonResponse:
     return service.evaluate_trust()
 
 
+@router.post("/routing/evaluate", response_model=RoutingEvaluationResponse)
+def evaluate_routing(payload: GenericProblemRequest) -> RoutingEvaluationResponse:
+    return workflow_service.evaluate_routing(payload)
+
+
 @router.get("/qprobe/library", response_model=MeasurementLibraryResponse)
 def get_qprobe_library() -> MeasurementLibraryResponse:
     return service.get_qprobe_library()
@@ -99,6 +106,11 @@ def recommend_qprobe_plan(payload: QProbeRequest) -> MeasurementPlanResponse:
 @router.post("/qprobe/adaptive-plan", response_model=AdaptiveMeasurementPlanResponse)
 def run_adaptive_qprobe(payload: QProbeRequest) -> AdaptiveMeasurementPlanResponse:
     return service.run_adaptive_qprobe(payload)
+
+
+@router.post("/qprobe/predict", response_model=QProbeModelPredictionResponse)
+def predict_qprobe_model(payload: QProbeRequest) -> QProbeModelPredictionResponse:
+    return service.predict_qprobe_model(payload)
 
 
 @router.post("/workflow/analyze", response_model=GenericAnalysisResponse)

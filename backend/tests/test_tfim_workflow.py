@@ -86,8 +86,10 @@ def test_generic_workflow_hubbard_has_no_vqe_strong_solver() -> None:
     if body["workflow_decision"]["escalation_triggered"]:
         assert body["workflow_decision"]["measurement_mode"] == "oracle_fallback"
         assert body["workflow_decision"]["active_solver"] == "exact_ed"
-        assert body["qprobe_exact"] is None
-        assert body["qprobe_adaptive"] is None
+        assert body["qprobe_exact"] is not None
+        assert body["qprobe_adaptive"] is not None
+        assert body["qprobe_exact"]["planning_state_solver"] == "exact_ed"
+        assert body["qprobe_adaptive"]["planning_state_solver"] == "exact_ed"
     else:
         assert body["workflow_decision"]["measurement_mode"] == "not_needed"
         assert body["workflow_decision"]["active_solver"] == "mean_field"

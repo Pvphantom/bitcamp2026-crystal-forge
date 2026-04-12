@@ -442,6 +442,10 @@ code {
   border-color: rgba(231, 153, 128, 0.28);
 }
 
+.target-chip.curated {
+  cursor: default;
+}
+
 .target-chip strong {
   font-size: 0.95rem;
 }
@@ -772,6 +776,97 @@ code {
   color: #c79f82;
 }
 
+.impact-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.impact-card {
+  border-radius: 22px;
+  padding: 1rem;
+  border: 1px solid rgba(151, 180, 224, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  display: grid;
+  gap: 0.35rem;
+}
+
+.impact-card.primary {
+  background: linear-gradient(135deg, rgba(58, 119, 163, 0.18), rgba(86, 166, 164, 0.12));
+}
+
+.impact-card.secondary {
+  background: linear-gradient(135deg, rgba(201, 107, 65, 0.14), rgba(217, 165, 75, 0.1));
+}
+
+.impact-card.accent {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.impact-label {
+  color: #9db0c4;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.impact-card strong {
+  color: #f4f7fd;
+  font-size: 1.55rem;
+  line-height: 1.1;
+}
+
+.impact-card small {
+  color: #a5b3c7;
+  line-height: 1.45;
+}
+
+.impact-bars {
+  margin-top: 1rem;
+  display: grid;
+  gap: 0.85rem;
+}
+
+.impact-bar-row {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.impact-bar-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  color: #9db0c4;
+}
+
+.impact-bar-head strong {
+  color: #f2f6fd;
+}
+
+.impact-track {
+  height: 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.impact-fill {
+  height: 100%;
+  border-radius: inherit;
+}
+
+.impact-fill-naive {
+  background: linear-gradient(90deg, #8f9aaa, #b3bcc8);
+}
+
+.impact-fill-compiled {
+  background: linear-gradient(90deg, #c96b41, #d9a54b);
+}
+
+.impact-fill-adaptive {
+  background: linear-gradient(90deg, #3a77a3, #57a6a4);
+}
+
 .channel-grid {
   display: grid;
   gap: 0.8rem;
@@ -1077,7 +1172,8 @@ code {
   .hero-metrics,
   .slider-grid,
   .slider-grid.compact,
-  .recoverable-grid {
+  .recoverable-grid,
+  .impact-grid {
     grid-template-columns: 1fr;
   }
 
