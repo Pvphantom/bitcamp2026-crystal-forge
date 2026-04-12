@@ -142,15 +142,21 @@ def build_measurement_library(Lx: int, Ly: int, t: float) -> dict[str, list[Meas
     }
 
 
+def build_measurement_library_from_operator_map(
+    operator_map: dict[str, SparsePauliOp],
+) -> dict[str, list[MeasurementGroup]]:
+    return {
+        name: group_operator_terms(name, operator)
+        for name, operator in operator_map.items()
+    }
+
+
 def build_measurement_library_for_problem(
     problem: ProblemSpec,
     registry: ObservableRegistry | None = None,
 ) -> dict[str, list[MeasurementGroup]]:
     observable_registry = registry or build_default_observable_registry()
-    return {
-        name: group_operator_terms(name, operator)
-        for name, operator in observable_registry.operator_map(problem).items()
-    }
+    return build_measurement_library_from_operator_map(observable_registry.operator_map(problem))
 
 
 def explain_stop_reason(success: bool, max_uncertainty: float, tolerance: float) -> str:

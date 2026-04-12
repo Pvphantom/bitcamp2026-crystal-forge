@@ -100,6 +100,17 @@ class TrustPredictionResponse(BaseModel):
     recommended_action: str | None = None
 
 
+class RoutingPredictionResponse(BaseModel):
+    available: bool
+    model_path: str
+    label: str | None = None
+    confidence: float | None = None
+    recommended_action: str | None = None
+    candidate_scores: dict[str, float] = Field(default_factory=dict)
+    abstained: bool = False
+    abstain_reason: str | None = None
+
+
 class TrustMetricsResponse(BaseModel):
     available: bool
     model_loaded: bool
@@ -128,8 +139,22 @@ class TrustComparisonResponse(BaseModel):
     recommended_action: str
 
 
+class ObservablePauliTermRequest(BaseModel):
+    pauli: str
+    coeff_real: float = 1.0
+    coeff_imag: float = 0.0
+
+
+class ObservableTargetSpecRequest(BaseModel):
+    name: str | None = None
+    alias: str | None = None
+    description: str | None = None
+    pauli_terms: list[ObservablePauliTermRequest] = Field(default_factory=list)
+
+
 class QProbeRequest(BaseModel):
     targets: list[str] = Field(default_factory=lambda: ["D", "Ms2", "Cs_max"])
+    observable_specs: list[ObservableTargetSpecRequest] = Field(default_factory=list)
     tolerance: float = Field(default=0.03, gt=0.0)
     shots_per_group: int = Field(default=4000, ge=1)
     readout_flip_prob: float = Field(default=0.0, ge=0.0, le=0.5)
@@ -226,6 +251,7 @@ class GenericProblemRequest(BaseModel):
     Ly: int = Field(default=2, ge=2)
     parameters: dict[str, float] = Field(default_factory=dict)
     qprobe_targets: list[str] = Field(default_factory=list)
+    qprobe_observable_specs: list[ObservableTargetSpecRequest] = Field(default_factory=list)
     qprobe_tolerance: float = Field(default=0.03, gt=0.0)
     qprobe_shots_per_group: int = Field(default=4000, ge=1)
     qprobe_readout_flip_prob: float = Field(default=0.0, ge=0.0, le=0.5)
@@ -250,11 +276,23 @@ class GenericTrustResponse(BaseModel):
     recommended_action: str
 
 
+class GenericRoutingResponse(BaseModel):
+    route_label: str
+    recommended_action: str
+    candidate_scores: dict[str, float] = Field(default_factory=dict)
+    abstained: bool = False
+    abstain_reason: str | None = None
+    intrinsic_label: str | None = None
+    intrinsic_score: float | None = None
+    intrinsic_reasons: list[str] = Field(default_factory=list)
+
+
 class WorkflowDecisionResponse(BaseModel):
     escalation_triggered: bool
     active_solver: str
     measurement_mode: str
     recommendation: str
+    route_label: str | None = None
 
 
 class GenericAnalysisResponse(BaseModel):
@@ -269,6 +307,7 @@ class GenericAnalysisResponse(BaseModel):
     cheap_solver: GenericSolverResultResponse
     strong_solver: GenericSolverResultResponse | None = None
     trust: GenericTrustResponse
+    routing: GenericRoutingResponse | None = None
     measurement_library: MeasurementLibraryResponse
     qprobe_exact: MeasurementPlanResponse | None = None
     qprobe_adaptive: AdaptiveMeasurementPlanResponse | None = None

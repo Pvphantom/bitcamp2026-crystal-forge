@@ -8,36 +8,74 @@ from app.domain.problem_spec import ProblemSpec
 from app.solvers.base import SolverResult
 
 
+TRUST_FEATURE_GROUPS = ("family_flags", "lattice_metadata", "model_parameters", "cheap_observables", "stability")
 TRUST_FAMILY_FEATURE_DIM = 22
 
 
 def build_trust_feature_vector(problem: ProblemSpec, cheap_result: SolverResult) -> torch.Tensor:
+    groups = build_trust_feature_groups(problem, cheap_result)
+    return flatten_trust_feature_groups(groups)
+
+
+def build_trust_feature_groups(problem: ProblemSpec, cheap_result: SolverResult) -> dict[str, torch.Tensor]:
     if problem.model_family == "hubbard":
-        return _build_hubbard_features(problem, cheap_result)
+        return _build_hubbard_feature_groups(problem, cheap_result)
     if problem.model_family == "tfim":
-        return _build_tfim_features(problem, cheap_result)
+        return _build_tfim_feature_groups(problem, cheap_result)
     raise ValueError(f"Unsupported model family for trust features: {problem.model_family}")
 
 
-def _base_prefix(problem: ProblemSpec, param_a: float, param_b: float, param_c: float) -> list[float]:
-    return [
-        1.0 if problem.model_family == "hubbard" else 0.0,
-        1.0 if problem.model_family == "tfim" else 0.0,
-        float(problem.Lx),
-        float(problem.Ly),
-        float(problem.nsites),
-        float(param_a),
-        float(param_b),
-        float(param_c),
-    ]
+def flatten_trust_feature_groups(
+    feature_groups: dict[str, torch.Tensor],
+    *,
+    include_groups: tuple[str, ...] | list[str] | None = None,
+    exclude_groups: tuple[str, ...] | list[str] | None = None,
+) -> torch.Tensor:
+    if include_groups is None:
+        names = [name for name in TRUST_FEATURE_GROUPS if name in feature_groups]
+    else:
+        names = [name for name in include_groups if name in feature_groups]
+    if exclude_groups is not None:
+        excluded = set(exclude_groups)
+        names = [name for name in names if name not in excluded]
+    return torch.cat([feature_groups[name] for name in names], dim=0)
 
 
-def _stats(values: list[float]) -> tuple[float, float]:
-    tensor = torch.tensor(values, dtype=torch.float32)
-    return float(tensor.mean().item()), float(tensor.std().item())
+def trust_feature_group_dims() -> dict[str, int]:
+    return {
+        "family_flags": 2,
+        "lattice_metadata": 3,
+        "model_parameters": 3,
+        "cheap_observables": 6,
+        "stability": 8,
+    }
 
 
-def _build_hubbard_features(problem: ProblemSpec, cheap_result: SolverResult) -> torch.Tensor:
+def _base_groups(problem: ProblemSpec, param_a: float, param_b: float, param_c: float) -> dict[str, torch.Tensor]:
+    return {
+        "family_flags": torch.tensor(
+            [
+                1.0 if problem.model_family == "hubbard" else 0.0,
+                1.0 if problem.model_family == "tfim" else 0.0,
+            ],
+            dtype=torch.float32,
+        ),
+        "lattice_metadata": torch.tensor(
+            [
+                float(problem.Lx),
+                float(problem.Ly),
+                float(problem.nsites),
+            ],
+            dtype=torch.float32,
+        ),
+        "model_parameters": torch.tensor(
+            [float(param_a), float(param_b), float(param_c)],
+            dtype=torch.float32,
+        ),
+    }
+
+
+def _build_hubbard_feature_groups(problem: ProblemSpec, cheap_result: SolverResult) -> dict[str, torch.Tensor]:
     n_up = cheap_result.site_observables["n_up"]
     n_dn = cheap_result.site_observables["n_dn"]
     d_site = cheap_result.site_observables["D_site"]
@@ -49,15 +87,20 @@ def _build_hubbard_features(problem: ProblemSpec, cheap_result: SolverResult) ->
         x = idx % problem.Lx
         y = idx // problem.Lx
         staggered_linear += ((-1) ** (x + y)) * (n_up[idx] - n_dn[idx]) / problem.nsites
-    return torch.tensor(
-        _base_prefix(problem, problem.t, problem.U, problem.mu)
-        + [
+    groups = _base_groups(problem, problem.t, problem.U, problem.mu)
+    groups["cheap_observables"] = torch.tensor(
+        [
             cheap_result.global_observables["D"],
             cheap_result.global_observables["n"],
             cheap_result.global_observables["Ms2"],
             cheap_result.global_observables["K"],
             cheap_result.global_observables["Cs_max"],
             cheap_result.global_observables["energy"],
+        ],
+        dtype=torch.float32,
+    )
+    groups["stability"] = torch.tensor(
+        [
             float(sum(abs_sz) / len(abs_sz)),
             float(max(abs_sz)),
             float(staggered_linear),
@@ -69,9 +112,10 @@ def _build_hubbard_features(problem: ProblemSpec, cheap_result: SolverResult) ->
         ],
         dtype=torch.float32,
     )
+    return groups
 
 
-def _build_tfim_features(problem: ProblemSpec, cheap_result: SolverResult) -> torch.Tensor:
+def _build_tfim_feature_groups(problem: ProblemSpec, cheap_result: SolverResult) -> dict[str, torch.Tensor]:
     mz = cheap_result.site_observables["Mz_site"]
     mx = cheap_result.site_observables["Mx_site"]
     abs_mz = [abs(value) for value in mz]
@@ -81,15 +125,20 @@ def _build_tfim_features(problem: ProblemSpec, cheap_result: SolverResult) -> to
         x = idx % problem.Lx
         y = idx // problem.Lx
         staggered_linear += ((-1) ** (x + y)) * value / problem.nsites
-    return torch.tensor(
-        _base_prefix(problem, problem.J, problem.h, problem.g)
-        + [
+    groups = _base_groups(problem, problem.J, problem.h, problem.g)
+    groups["cheap_observables"] = torch.tensor(
+        [
             cheap_result.global_observables["Mz"],
             cheap_result.global_observables["Mx"],
             cheap_result.global_observables["ZZ_nn"],
             cheap_result.global_observables["Mstag2"],
             cheap_result.global_observables["Z_span"],
             cheap_result.global_observables["energy"],
+        ],
+        dtype=torch.float32,
+    )
+    groups["stability"] = torch.tensor(
+        [
             float(sum(abs_mz) / len(abs_mz)),
             float(max(abs_mz)),
             float(staggered_linear),
@@ -101,3 +150,4 @@ def _build_tfim_features(problem: ProblemSpec, cheap_result: SolverResult) -> to
         ],
         dtype=torch.float32,
     )
+    return groups

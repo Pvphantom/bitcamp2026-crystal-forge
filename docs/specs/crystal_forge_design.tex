@@ -671,15 +671,36 @@ The phase training pipeline:
 
 \subsection{Definition}
 
-CorrMap is the solver-trust layer. It answers:
+CorrMap is now a \emph{binary regime router}. Its primary question is:
 
 \begin{quote}
-Can the cheap solver be trusted here, or is the regime too strongly correlated?
+Is this lattice problem still in a scalable classical regime, or has it entered a quantum-frontier regime?
 \end{quote}
 
-\subsection{Exact-vs-approx comparison}
+\noindent
+Operationally, the canonical CorrMap output is:
+\[
+\{\texttt{classical\_scalable},\ \texttt{quantum\_frontier}\}.
+\]
 
-For a given problem, let:
+The intended meanings are:
+
+\begin{itemize}
+\item \textbf{\texttt{classical\_scalable}}: the instance still appears tractable by scalable classical methods. This bucket deliberately includes easy mean-field-like cases as well as harder but still classically tractable cases.
+\item \textbf{\texttt{quantum\_frontier}}: the instance appears sufficiently correlated, fluctuation-dominated, or classically obstructed that the workflow should escalate to the quantum branch when such a branch exists.
+\end{itemize}
+
+This binary framing is now the \textbf{primary CorrMap methodology} for the project and should be treated as the canonical CorrMap definition by future work. The earlier variants are retained only as support layers:
+\begin{itemize}
+\item the exact-vs-approx trust layer for small-system calibration,
+\item the older three-way route layer \(\{\texttt{mean\_field},\texttt{scalable\_classical},\texttt{quantum\_frontier}\}\) for internal experiments and ablations.
+\end{itemize}
+
+The reason for the shift is both conceptual and empirical. Conceptually, the real workflow question is not ``is mean field perfect?'' but ``is this still a classical problem, or should it go quantum?'' Empirically, the weakest class in the three-way setup was the explicit \texttt{mean\_field} route, especially for TFIM. The binary CorrMap therefore matches the actual routing question better than the earlier multi-class route.
+
+\subsection{Legacy exact-vs-approx trust layer}
+
+The older trust machinery remains scientifically useful because it preserves a hard exact-oracle calibration path on tiny lattices. For a given problem, let:
 
 \begin{itemize}
 \item \(o_k^{\mathrm{exact}}\) be the exact observable values,
@@ -695,9 +716,7 @@ Then the comparison layer computes:
 \Delta_E &= |E^{\mathrm{cheap}} - E^{\mathrm{exact}}|.
 \end{align}
 
-\subsection{Risk labels}
-
-Current risk thresholds are:
+The legacy trust labels are:
 
 \begin{itemize}
 \item \textbf{safe}: \(\Delta_{\max} < 0.08\) and \(\Delta_E < 0.25\),
@@ -705,9 +724,32 @@ Current risk thresholds are:
 \item \textbf{unsafe}: otherwise.
 \end{itemize}
 
-\subsection{Trust features}
+These labels are still used for:
+\begin{itemize}
+\item auditing the cheap solver on exactly solvable lattices,
+\item building the small-lattice supervised routing dataset,
+\item maintaining the older \verb|/api/trust/*| endpoints for explicit exact-vs-cheap comparison.
+\end{itemize}
 
-CorrMap uses only cheap-solver-accessible features plus lattice metadata. The current family-aware TrustNet feature vector has dimension \(22\). The first two coordinates are one-hot family flags for \texttt{hubbard} and \texttt{tfim}, followed by lattice and parameter metadata, then cheap-solver summary statistics.
+\subsection{Why binary CorrMap replaced the three-way route}
+
+The older three-way route labels were:
+\[
+\{\texttt{mean\_field},\ \texttt{scalable\_classical},\ \texttt{quantum\_frontier}\}.
+\]
+
+That formulation was useful for exploration, but it turned out to be too brittle for the actual deployment question:
+\begin{itemize}
+\item many practically classical points were being split unnaturally between \texttt{mean\_field} and \texttt{scalable\_classical},
+\item TFIM performance suffered most on the \texttt{mean\_field} boundary,
+\item the real system decision is not ``should I use plain mean field specifically?'' but rather ``can I remain classical, or should I escalate quantum?''
+\end{itemize}
+
+Thus the binary CorrMap now treats mean field as a \emph{downstream classical method}, not as a top-level CorrMap label.
+
+\subsection{Base cheap-solver features}
+
+Every CorrMap path begins with the original family-aware cheap feature vector of dimension \(22\), built only from data available after the cheap solver runs. The first two coordinates are one-hot family flags for \texttt{hubbard} and \texttt{tfim}, followed by lattice and parameter metadata, then cheap-solver summary statistics.
 
 \begin{longtable}{p{0.08\textwidth}p{0.82\textwidth}}
 \toprule
@@ -725,79 +767,311 @@ Index group & Meaning \\
 \bottomrule
 \end{longtable}
 
+\subsection{Intrinsic diagnostics}
+
+CorrMap does not rely only on the \(22\)-dimensional cheap summary. It augments those features with scalable diagnostics computed directly on the target lattice itself. The current intrinsic diagnostics are:
+
+\begin{enumerate}[label=\arabic*.]
+\item \textbf{Multi-seed stability}: rerun mean field from multiple random initializations and measure convergence fraction, energy span, residual statistics, and the number of distinct fixed points.
+\item \textbf{Parameter sensitivity}: perturb the control parameters slightly and measure shifts in observables and energy density.
+\item \textbf{Size consistency}: compare the current lattice to a nearby smaller lattice at the same intensive couplings and measure observable drift.
+\item \textbf{Ansatz disagreement}: compare unrestricted mean field to a simpler alternate cheap ansatz.
+\item \textbf{Hysteresis}: sweep a control parameter through the target point from both directions and measure path dependence.
+\end{enumerate}
+
+These diagnostics are implemented in:
+\begin{itemize}
+\item \verb|mf_stability.py|,
+\item \verb|mf_sensitivity.py|,
+\item \verb|mf_size_consistency.py|,
+\item \verb|mf_ansatz_disagreement.py|,
+\item \verb|mf_hysteresis.py|.
+\end{itemize}
+
+Each diagnostic is defined entirely from scalable cheap-solver runs on the target lattice. No exact solver is needed to compute them. This is the core ethical constraint of the current CorrMap deployment story: the live prediction path must remain available on larger lattices even when no strong oracle is available.
+
+\subsection{Physical tractability checks}
+
+To move CorrMap away from pure oracle imitation and toward physics-aware routing, the current system also computes explicit tractability scores:
+
+\begin{itemize}
+\item \(\texttt{mean\_field\_plausibility}\),
+\item \(\texttt{scalable\_classical\_plausibility}\),
+\item \(\texttt{quantum\_frontier\_pressure}\),
+\item \(\texttt{sign\_problem\_risk}\),
+\item \(\texttt{stoquasticity}\),
+\item a factorization proxy,
+\item an interaction-pressure proxy,
+\item a critical-pressure proxy.
+\end{itemize}
+
+These are built in \verb|physical_tractability.py| using conceptually portable rules:
+
+\begin{itemize}
+\item \textbf{Hubbard}: strong coupling near half filling increases frontier pressure; doping and low interaction strength increase mean-field plausibility; sign-pressure proxies penalize classical confidence away from benign regimes.
+\item \textbf{TFIM}: stoquastic TFIM with positive \(J\) and \(h\) increases classical plausibility; proximity to the low-bias critical line increases frontier pressure; strongly field-dominated points increase mean-field plausibility.
+\end{itemize}
+
+These checks are not treated as ground-truth labels. They are physics-aware priors and weak supervision signals. The development history of CorrMap showed that performance improved materially once explicit physical mechanisms were introduced, so these quantities are now treated as first-class routing evidence rather than optional annotations.
+
+\subsection{Augmented CorrMap feature vector}
+
+The augmented CorrMap feature vector has dimension \(49\):
+\[
+22\ \text{base cheap features} + 19\ \text{intrinsic diagnostics} + 8\ \text{physical tractability signals}.
+\]
+
+The augmented intrinsic block contains:
+\begin{itemize}
+\item convergence fraction,
+\item energy standard deviation and span across seeds,
+\item residual mean and maximum,
+\item final update magnitude,
+\item distinct fixed-point count,
+\item maximum observable span across seeds,
+\item sensitivity statistics,
+\item size-consistency statistics,
+\item ansatz-disagreement statistics,
+\item hysteresis statistics.
+\end{itemize}
+
+The final \(8\) coordinates are the physical tractability quantities listed above.
+
 \subsection{Why these features scale}
 
 These features are intentionally chosen to be:
-
 \begin{itemize}
 \item available on larger lattices,
 \item available without exact ED,
-\item approximately size-stable summary statistics,
-\item compatible with transfer tests such as \(2\times 2 \to 2\times 3\),
-\item compatible with mixed-family trust training across Hubbard and TFIM.
+\item defined from cheap-solver or low-cost continuation computations,
+\item physically interpretable rather than purely statistical,
+\item compatible with transfer from small labeled regimes to larger weakly supervised regimes.
 \end{itemize}
 
-\subsection{TrustNet architecture}
+\subsection{CorrMap-related models in the repository}
 
-TrustNet is a small multilayer perceptron:
-
-\begin{itemize}
-\item input dimension: \(22\),
-\item hidden width: \(64\),
-\item LayerNorm after the first linear layer,
-\item GELU nonlinearities,
-\item outputs:
-  \begin{itemize}
-  \item risk logits for \(\{\texttt{safe},\texttt{warning},\texttt{unsafe}\}\),
-  \item a scalar prediction of the maximum absolute observable error.
-  \end{itemize}
-\end{itemize}
-
-\subsection{TrustNet training objective}
-
-The training loss is
-\begin{equation}
-\mathcal{L}_{\mathrm{trust}}
-=
-\mathcal{L}_{\mathrm{CE}}(\text{risk})
- + \frac{1}{2}\mathcal{L}_{\mathrm{L1}}(\widehat{\Delta}_{\max},\Delta_{\max}),
-\end{equation}
-with class-weighted cross-entropy and \(L^1\) regression loss.
-
-\subsection{Conservative safe guards}
-
-TrustNet explicitly uses post-training safe guards to reduce false-safe errors. If the model predicts \texttt{safe} but:
-
-\begin{itemize}
-\item the predicted error exceeds a learned error guard, or
-\item the \texttt{safe} probability is below a learned probability guard,
-\end{itemize}
-
-the prediction is downgraded to \texttt{warning}. This makes CorrMap useful as a conservative router rather than an aggressive classifier.
-
-\subsection{Trust dataset generation}
-
-The trust dataset is generated by:
-
+There are now three CorrMap-related model families in the repository:
 \begin{enumerate}[label=\arabic*.]
-\item sweeping parameter grids for \(2\times 2\) and \(2\times 3\) Hubbard systems,
-\item sweeping parameter grids for \(2\times 2\) and \(2\times 3\) TFIM systems,
-\item solving each point exactly and approximately,
-\item comparing the two,
-\item storing the family-aware cheap-solver feature vector and oracle disagreement metrics.
+\item \textbf{Legacy trust CorrMap}: exact-vs-cheap \(\{\texttt{safe},\texttt{warning},\texttt{unsafe}\}\) on tiny lattices.
+\item \textbf{Experimental three-way route CorrMap}: \(\{\texttt{mean\_field},\texttt{scalable\_classical},\texttt{quantum\_frontier}\}\).
+\item \textbf{Canonical binary CorrMap}: \(\{\texttt{classical\_scalable},\texttt{quantum\_frontier}\}\).
 \end{enumerate}
 
-The current parameter grids are:
+Only the third of these should now be treated as the primary public CorrMap definition for the project.
 
+\subsection{Routing dataset}
+
+The supervised routing dataset is generated in \verb|data_gen_routing.py|. Each record stores:
 \begin{itemize}
-\item \(2\times 2\): \(U \in \{0,0.5,1,1.5,2,3,4,5,6,8,10\}\), \(\mu \in \{-2,-1,0,1,2,3,4,5,6\}\),
-\item \(2\times 3\): \(U \in \{0,2,4,8,10\}\), \(\mu \in \{0,2,4,5\}\).
+\item the cheap-solver feature vector,
+\item problem metadata,
+\item per-solver outcomes,
+\item oracle reference provenance,
+\item the route label.
 \end{itemize}
 
-For TFIM, the current grids are:
+The current routing dataset contains \(155\) samples drawn only from \(2\times 2\) and \(2\times 3\) systems:
 \begin{itemize}
-\item \(2\times 2\): \(J \in \{0.5,1.0,1.5\}\), \(h \in \{0.2,0.6,1.0,1.5,2.0\}\), \(g \in \{0.0,0.5\}\),
-\item \(2\times 3\): \(J=1.0\), \(h \in \{0.4,1.0,1.8\}\), \(g \in \{0.0,0.5\}\).
+\item route supervision is restricted to small lattices,
+\item only strong-reference labels are used,
+\item \texttt{uncertain} labels are excluded from this supervised route set.
+\end{itemize}
+
+The current small-lattice three-way route label distribution is:
+\begin{itemize}
+\item \(35\) \texttt{mean\_field},
+\item \(98\) \texttt{scalable\_classical},
+\item \(22\) \texttt{quantum\_frontier}.
+\end{itemize}
+
+For the binary CorrMap, these are collapsed to:
+\begin{itemize}
+\item \texttt{classical\_scalable}: all former \texttt{mean\_field} and \texttt{scalable\_classical} points,
+\item \texttt{quantum\_frontier}: all former \texttt{quantum\_frontier} points.
+\end{itemize}
+
+\subsection{Intrinsic dataset}
+
+The intrinsic dataset is generated in \verb|data_gen_intrinsic_corrmap.py|. It contains no exact labels. Each sample stores:
+\begin{itemize}
+\item the cheap \(22\)-feature vector,
+\item all intrinsic diagnostics,
+\item all physical tractability quantities,
+\item an intrinsic label from \(\{\texttt{stable\_classical},\texttt{fragile\_classical},\texttt{frontier\_or\_uncertain}\}\).
+\end{itemize}
+
+The intrinsic dataset is intentionally built on larger lattices than the route dataset:
+\begin{itemize}
+\item \(4\times 4\) and \(6\times 6\) only,
+\item \(48\) total samples in the current artifact,
+\item label source explicitly marked as \texttt{intrinsic\_only}.
+\end{itemize}
+
+For the canonical binary CorrMap, the intrinsic labels are collapsed as:
+\[
+\texttt{stable\_classical},\ \texttt{fragile\_classical}\to \texttt{classical\_scalable},\qquad
+\texttt{frontier\_or\_uncertain}\to \texttt{quantum\_frontier}.
+\]
+
+\subsection{Independent regime benchmark}
+
+To avoid evaluating CorrMap only against its own internal labels, the project also uses a separate regime benchmark. The corrected benchmark path is defined in \verb|build_regime_benchmark_refined_v2.py|. This benchmark is:
+
+\begin{itemize}
+\item independent of the trained model,
+\item hand-curated from physics priors,
+\item split evenly across \(6\times 6\) and \(8\times 8\),
+\item built first in a three-class regime language and then evaluated either in three-class form or collapsed into the binary CorrMap decision.
+\end{itemize}
+
+The corrected \(v2\) benchmark contains \(60\) samples. In three-class form, the label counts are:
+\begin{itemize}
+\item \(20\) \texttt{mean\_field},
+\item \(22\) \texttt{scalable\_classical},
+\item \(18\) \texttt{quantum\_frontier}.
+\end{itemize}
+
+For the canonical binary CorrMap, the benchmark is collapsed as:
+\[
+\texttt{mean\_field}\cup \texttt{scalable\_classical}\to \texttt{classical\_scalable},\qquad
+\texttt{quantum\_frontier}\to \texttt{quantum\_frontier}.
+\]
+
+Thus the binary benchmark counts are:
+\begin{itemize}
+\item \(42\) \texttt{classical\_scalable},
+\item \(18\) \texttt{quantum\_frontier}.
+\end{itemize}
+
+The benchmark labels are heuristic regime labels, not exact-oracle truth. This remains the main methodological limitation and is made explicit in the design.
+
+\subsection{Ethical train/validation/test split}
+
+The current CorrMap methodology is intentionally staged to avoid training on the final held-out frontier lattice:
+
+\begin{itemize}
+\item \textbf{Small-lattice route supervision}: \(2\times 2\) and \(2\times 3\) only.
+\item \textbf{Large-lattice intrinsic supervision}: \(4\times 4\) and \(6\times 6\) only.
+\item \textbf{Benchmark-based model selection}: \(6\times 6\) benchmark subset only.
+\item \textbf{Held-out frontier test}: \(8\times 8\) benchmark subset only.
+\end{itemize}
+
+Thus the binary CorrMap is \emph{not} trained on \(8\times 8\) data. The \(8\times 8\) results reported below are true held-out benchmark results under the current methodology.
+
+\subsection{Binary CorrMap architecture and objective}
+
+The canonical binary CorrMap is implemented in \verb|binary_corrmap_model.py| and trained in \verb|train_binary_corrmap.py|.
+
+Its architecture is intentionally simple:
+\begin{itemize}
+\item input dimension: \(49\),
+\item hidden width: \(96\),
+\item LayerNorm after the first linear layer,
+\item GELU nonlinearities,
+\item a single sigmoid frontier head.
+\end{itemize}
+
+The binary trainer uses:
+\begin{itemize}
+\item small-lattice route supervision from the existing route dataset, collapsed into \(\{\texttt{classical\_scalable},\texttt{quantum\_frontier}\}\),
+\item larger-lattice intrinsic supervision from the intrinsic dataset, collapsed into the same binary labels,
+\item benchmark-based threshold selection on the \(6\times 6\) half of the corrected regime benchmark.
+\end{itemize}
+
+The loss is class-weighted binary cross-entropy. This simplifies the learning problem substantially:
+\begin{itemize}
+\item CorrMap no longer needs to distinguish ``clean mean field'' from ``hard but classical'',
+\item many former TFIM errors become non-errors because both land in the classical bucket,
+\item the deployed question now matches the actual routing question more directly.
+\end{itemize}
+
+\subsection{Runtime interpretation}
+
+The binary CorrMap outputs:
+\begin{itemize}
+\item \textbf{\texttt{classical\_scalable}}: remain on the classical side, then let a secondary classical selector decide whether plain mean field is adequate or whether a stronger classical method should be preferred,
+\item \textbf{\texttt{quantum\_frontier}}: escalate to the quantum branch when available.
+\end{itemize}
+
+Thus CorrMap no longer attempts to decide the fine structure of the classical branch as its public top-level job. It decides whether the problem is still classical at all.
+
+\subsection{Current quantitative performance}
+
+The current primary CorrMap result should be read from the binary benchmark, not the older three-way benchmark.
+
+The saved quick binary training metrics are:
+\begin{itemize}
+\item routing validation accuracy: \(1.0\),
+\item routing test accuracy: \(1.0\),
+\item intrinsic validation accuracy: \(0.80\),
+\item intrinsic test accuracy: \(0.90\),
+\item benchmark-based \(6\times 6\) model-selection accuracy: \(83.3\%\).
+\end{itemize}
+
+The independent corrected benchmark result for the binary CorrMap is:
+\begin{itemize}
+\item overall benchmark accuracy: \(85.0\%\),
+\item \(6\times 6\) benchmark accuracy: \(83.3\%\),
+\item held-out \(8\times 8\) benchmark accuracy: \(86.7\%\).
+\end{itemize}
+
+By family:
+\begin{itemize}
+\item Hubbard benchmark accuracy: \(90.0\%\),
+\item TFIM benchmark accuracy: \(80.0\%\).
+\end{itemize}
+
+By truth label:
+\begin{itemize}
+\item \texttt{classical\_scalable}: \(88.1\%\),
+\item \texttt{quantum\_frontier}: \(77.8\%\).
+\end{itemize}
+
+This is the strongest CorrMap result currently available in the repository. It materially improves over the earlier three-way route formulation, especially on TFIM, precisely because it stops forcing a brittle distinction between plain mean field and the broader classical regime.
+
+\subsection{Relationship to the older three-way numbers}
+
+The older three-way CorrMap remains documented because it provided the route toward the current binary design. Its best corrected-benchmark numbers were:
+\begin{itemize}
+\item overall: \(78.3\%\),
+\item Hubbard: \(93.3\%\),
+\item TFIM: \(63.3\%\).
+\end{itemize}
+
+When those same three-way outputs are collapsed post hoc into binary classical-vs-quantum labels, the benchmark rises to:
+\begin{itemize}
+\item overall: \(88.3\%\),
+\item TFIM: \(76.7\%\).
+\end{itemize}
+
+The dedicated binary CorrMap then reaches:
+\begin{itemize}
+\item overall: \(85.0\%\),
+\item TFIM: \(80.0\%\).
+\end{itemize}
+
+This is why the project now treats the binary path as canonical: it is the most faithful framing of the real routing question and the strongest family-balanced result currently available.
+
+\subsection{What can and cannot be claimed}
+
+Under the updated methodology, the honest claim is:
+
+\begin{quote}
+CorrMap works as a binary classical-vs-quantum regime router that combines small-lattice supervised routing, large-lattice intrinsic diagnostics, and physics-aware tractability checks. It generalizes to held-out \(8\times 8\) benchmark points without training on \(8\times 8\) data.
+\end{quote}
+
+The dishonest claim would be:
+
+\begin{quote}
+CorrMap is proven physically correct on \(6\times 6\) or \(8\times 8\) lattices.
+\end{quote}
+
+The current benchmark is independent of the trained model, but it is still a physics-prior benchmark rather than a strong-solver oracle benchmark. Therefore:
+
+\begin{itemize}
+\item CorrMap can be presented as a working routing prototype under the revised methodology,
+\item CorrMap should not be presented as a theorem or an exact certification layer for large lattices,
+\item the benchmark should be described as an independent regime benchmark, not as ground-truth exact correctness.
 \end{itemize}
 
 \section{QProbe: Exact Measurement Planner}
@@ -961,7 +1235,7 @@ The backend now exposes a generic workflow endpoint that performs, for any suppo
 \begin{itemize}
 \item an exact solve,
 \item a cheap approximate solve,
-\item CorrMap trust analysis,
+\item CorrMap regime analysis,
 \item optional quantum escalation to VQE when a strong solver is registered,
 \item exact QProbe planning on the active quantum path when escalation occurs,
 \item Adaptive QProbe planning on the active quantum path when escalation occurs.
@@ -975,18 +1249,18 @@ The current workflow service implements the following decision logic:
 
 \begin{enumerate}[label=\arabic*.]
 \item Run the cheap solver.
-\item Compare the cheap solver to the exact oracle on the small calibration system.
-\item Use CorrMap to assign one of \(\{\texttt{safe},\texttt{warning},\texttt{unsafe}\}\).
-\item If the label is \texttt{safe}, keep the cheap solver and do not run QProbe.
-\item If the label is \texttt{warning} or \texttt{unsafe} and a strong quantum solver exists, escalate to VQE and run QProbe on the VQE state.
-\item If the label is \texttt{warning} or \texttt{unsafe} and no strong quantum solver exists, fall back to the exact oracle on the small system and do not run QProbe.
+\item Run CorrMap to assign one of \(\{\texttt{classical\_scalable},\texttt{quantum\_frontier}\}\).
+\item If CorrMap returns \texttt{classical\_scalable}, stay on the classical side and do not run QProbe.
+\item If CorrMap returns \texttt{quantum\_frontier} and a strong quantum solver exists, escalate to VQE and run QProbe on the VQE state.
+\item If CorrMap returns \texttt{quantum\_frontier} and no strong quantum solver exists, fall back to the strongest available non-quantum path on the small solvable calibration system and do not run QProbe.
+\item Preserve the older exact-vs-approx trust output as an auditing signal, not as the primary route decision.
 \end{enumerate}
 
 This means the current family behavior is:
 
 \begin{itemize}
-\item \textbf{TFIM}: cheap solver \(\rightarrow\) CorrMap \(\rightarrow\) possible VQE escalation \(\rightarrow\) QProbe on the VQE state.
-\item \textbf{Hubbard}: cheap solver \(\rightarrow\) CorrMap \(\rightarrow\) exact-oracle fallback if unsafe, since no Hubbard VQE path is yet registered.
+\item \textbf{TFIM}: cheap solver \(\rightarrow\) binary CorrMap \(\rightarrow\) possible VQE escalation \(\rightarrow\) QProbe on the VQE state.
+\item \textbf{Hubbard}: cheap solver \(\rightarrow\) binary CorrMap \(\rightarrow\) classical continuation or exact-oracle fallback on tiny systems, since no Hubbard quantum branch is yet registered.
 \end{itemize}
 
 \section{ML-QProbe}
@@ -1077,14 +1351,14 @@ The current application is designed as a three-stage pipeline:
 
 \begin{enumerate}[label=\arabic*.]
 \item \textbf{Identify the regime}: use the phase classifier to summarize the physics.
-\item \textbf{Check solver trust}: use CorrMap to decide whether the cheap solver is safe.
+\item \textbf{Classical-vs-quantum routing}: use CorrMap to decide whether the problem remains classically scalable or should escalate quantum.
 \item \textbf{Plan the measurements}: use QProbe or Adaptive QProbe to reduce measurement cost for the chosen diagnostics.
 \end{enumerate}
 
 This yields a final recommendation of the form:
 
 \begin{quote}
-Regime \(=\) \texttt{Antiferromagnet}; cheap solver \(=\) risky; recommendation \(=\) escalate to exact/advanced method; if escalated, use Adaptive QProbe runtime plan.
+Regime \(=\) \texttt{Antiferromagnet}; CorrMap \(=\) \texttt{quantum\_frontier}; recommendation \(=\) escalate to the quantum branch when available; if escalated, use Adaptive QProbe runtime plan.
 \end{quote}
 
 \section{API Surface}
@@ -1144,6 +1418,7 @@ It returns a single payload containing:
 \item cheap solver result,
 \item strong solver result when present,
 \item trust comparison and recommendation,
+\item binary CorrMap route and supporting intrinsic analysis,
 \item exact QProbe result only when the workflow escalates into the quantum path,
 \item Adaptive QProbe result only when the workflow escalates into the quantum path,
 \item measurement library for the requested family.
@@ -1177,8 +1452,8 @@ The page is easiest to understand if it is read in the following order:
 
 \begin{enumerate}[label=\arabic*.]
 \item \textbf{Regime Summary}: ``what kind of state am I looking at?''
-\item \textbf{CorrMap}: ``can I trust the cheap fast solver?''
-\item \textbf{Workflow Decision}: ``do I stop, fall back to the exact oracle, or escalate to VQE?''
+\item \textbf{CorrMap}: ``is this still a classical problem, or should it go quantum?''
+\item \textbf{Workflow Decision}: ``do I remain classical or escalate to VQE?''
 \item \textbf{QProbe}: ``if I used the quantum path, how many measurements can I safely skip?''
 \end{enumerate}
 
@@ -1198,7 +1473,7 @@ The top of the page explains the product in plain English. These cards exist to 
 For a non-specialist, the correct summary is:
 
 \begin{quote}
-The app first summarizes the state, then checks whether a cheap solver is trustworthy, then only uses the quantum measurement planner if the stronger solver path is actually needed.
+The app first summarizes the state, then decides whether the problem is still classically tractable, then only uses the quantum measurement planner if the quantum path is actually needed.
 \end{quote}
 
 \subsubsection{Unified workflow tester}
@@ -1216,7 +1491,7 @@ It shows:
 \item the cheap solver,
 \item the strong solver if one exists,
 \item the active solver the workflow actually selected,
-\item the CorrMap risk label,
+\item the CorrMap binary route,
 \item the measurement mode:
   \begin{itemize}
   \item \verb|not_needed|,
@@ -1229,8 +1504,8 @@ It shows:
 
 \begin{itemize}
 \item \textbf{\texttt{not\_needed}}: the cheap solver is good enough; the workflow stops early.
-\item \textbf{\texttt{quantum\_follow\_on}}: the cheap solver is not good enough, so the workflow escalates to the quantum solver and then applies QProbe to the quantum result.
-\item \textbf{\texttt{oracle\_fallback}}: the cheap solver is not good enough, but there is no registered quantum solver for that model family yet, so the backend falls back to the exact oracle on the small solvable system.
+\item \textbf{\texttt{quantum\_follow\_on}}: CorrMap classified the instance as \texttt{quantum\_frontier}, so the workflow escalates to the quantum solver and then applies QProbe to the quantum result.
+\item \textbf{\texttt{oracle\_fallback}}: CorrMap classified the instance as \texttt{quantum\_frontier}, but there is no registered quantum solver for that model family yet, so the backend falls back to the exact oracle on the small solvable system.
 \end{itemize}
 
 \subsubsection{Workflow presets}
@@ -1238,7 +1513,7 @@ It shows:
 The workflow presets are there to force known backend branches:
 
 \begin{itemize}
-\item \texttt{TFIM Safe}: demonstrate the safe cheap-solver branch,
+\item \texttt{TFIM Classical}: demonstrate the classical branch,
 \item \texttt{TFIM Quantum Escalation}: demonstrate the CorrMap \(\rightarrow\) VQE \(\rightarrow\) QProbe branch,
 \item \texttt{Hubbard Exact Fallback}: demonstrate the no-quantum-solver fallback branch.
 \end{itemize}
@@ -1252,7 +1527,7 @@ This card shows the approximate fast baseline. A non-specialist should read it a
 ``This is the quick answer.''
 \end{quote}
 
-The values shown here are the ones CorrMap decides whether to trust.
+These values are part of the evidence CorrMap uses when deciding whether the problem remains classically scalable.
 
 \subsubsection{Exact oracle card}
 
@@ -1285,7 +1560,7 @@ For a non-specialist:
 \begin{itemize}
 \item smaller gaps mean the cheap solver is behaving well,
 \item larger gaps mean the cheap solver is missing important physics,
-\item the risk label \texttt{safe}/\texttt{warning}/\texttt{unsafe} is derived from these gaps plus the energy gap.
+\item the old trust label \texttt{safe}/\texttt{warning}/\texttt{unsafe} is derived from these gaps plus the energy gap, but that legacy trust label is now an audit aid rather than the primary CorrMap route.
 \end{itemize}
 
 \subsubsection{QProbe cards}

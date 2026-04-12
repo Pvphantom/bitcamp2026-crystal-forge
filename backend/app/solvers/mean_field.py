@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Sequence
 
 import numpy as np
 
@@ -14,6 +15,10 @@ class MeanFieldSettings:
     max_iter: int = 200
     tol: float = 1e-8
     mixing: float = 0.35
+    seed: int | None = None
+    init_noise_scale: float = 0.0
+    init_n_up: Sequence[float] | None = None
+    init_n_dn: Sequence[float] | None = None
 
 
 def _hopping_matrix(problem: ProblemSpec) -> np.ndarray:
@@ -36,6 +41,21 @@ def _half_filled_af_seed(problem: ProblemSpec) -> tuple[np.ndarray, np.ndarray]:
     return np.clip(n_up, 0.0, 1.0), np.clip(n_dn, 0.0, 1.0)
 
 
+def _randomized_seed(problem: ProblemSpec, settings: MeanFieldSettings) -> tuple[np.ndarray, np.ndarray]:
+    if settings.init_n_up is not None and settings.init_n_dn is not None:
+        return (
+            np.clip(np.asarray(settings.init_n_up, dtype=float), 0.0, 1.0),
+            np.clip(np.asarray(settings.init_n_dn, dtype=float), 0.0, 1.0),
+        )
+    n_up, n_dn = _half_filled_af_seed(problem)
+    if settings.init_noise_scale <= 0.0:
+        return n_up, n_dn
+    rng = np.random.default_rng(settings.seed)
+    noise_up = rng.normal(scale=settings.init_noise_scale, size=problem.nsites)
+    noise_dn = rng.normal(scale=settings.init_noise_scale, size=problem.nsites)
+    return np.clip(n_up + noise_up, 0.0, 1.0), np.clip(n_dn + noise_dn, 0.0, 1.0)
+
+
 def _occupy_negative_energy_states(ham: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     eigvals, eigvecs = np.linalg.eigh(ham)
     occupied = eigvals < -1e-10
@@ -54,9 +74,10 @@ class MeanFieldSolver(BaseSolver):
 
     def solve(self, problem: ProblemSpec) -> SolverResult:
         hopping = _hopping_matrix(problem)
-        n_up, n_dn = _half_filled_af_seed(problem)
+        n_up, n_dn = _randomized_seed(problem, self.settings)
         converged = False
         iterations = 0
+        final_delta = float("inf")
 
         for iterations in range(1, self.settings.max_iter + 1):
             h_up = hopping + np.diag(problem.U * n_dn - problem.mu)
@@ -69,6 +90,7 @@ class MeanFieldSolver(BaseSolver):
                 float(np.max(np.abs(mixed_up - n_up))),
                 float(np.max(np.abs(mixed_dn - n_dn))),
             )
+            final_delta = delta
             n_up, n_dn = mixed_up, mixed_dn
             if delta < self.settings.tol:
                 converged = True
@@ -78,6 +100,14 @@ class MeanFieldSolver(BaseSolver):
         h_dn = hopping + np.diag(problem.U * n_up - problem.mu)
         _, eig_up = _occupy_negative_energy_states(h_up)
         _, eig_dn = _occupy_negative_energy_states(h_dn)
+        residual_up, _ = _occupy_negative_energy_states(h_up)
+        residual_dn, _ = _occupy_negative_energy_states(h_dn)
+        residual_norm = float(
+            max(
+                np.max(np.abs(residual_up - n_up)),
+                np.max(np.abs(residual_dn - n_dn)),
+            )
+        )
 
         double_occ = np.clip(n_up * n_dn, 0.0, 1.0)
         sz_site = 0.5 * (n_up - n_dn)
@@ -132,6 +162,12 @@ class MeanFieldSolver(BaseSolver):
             },
             bond_observables=bond_observables,
             statevector=None,
-            metadata={"converged": converged, "iterations": iterations},
+            metadata={
+                "converged": converged,
+                "iterations": iterations,
+                "final_delta": final_delta,
+                "residual_norm": residual_norm,
+                "seed": self.settings.seed,
+                "init_noise_scale": self.settings.init_noise_scale,
+            },
         )
-

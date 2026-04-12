@@ -36,12 +36,18 @@ from app.ml.infer import (
     TrustInferenceEngine,
     TrustMetricsReader,
 )
+from app.ml.qprobe_operator_features import build_qprobe_operator_feature_vector
+from app.ml.schema import DEFAULT_QPROBE_GENERAL_MODEL_PATH
+from app.observables.request_compiler import resolve_observable_requests
 from app.ml.schema import build_graph_sample, classify_phase_rule
 from app.observables.registry import build_default_observable_registry
 from app.optimization.measurement_plan import (
     AdaptiveMeasurementStep,
+    group_support_map_for_targets,
     search_adaptive_measurement_plan,
+    search_adaptive_measurement_plan_with_operator_map,
     search_minimal_measurement_plan,
+    search_minimal_measurement_plan_with_operator_map,
 )
 from app.solvers.exact_ed import ExactEDSolver
 from app.solvers.mean_field import MeanFieldSolver
@@ -50,7 +56,7 @@ from app.physics.ed import expectation_value, ground_state, operator_matrix
 from app.physics.hamiltonian import build_hamiltonian
 from app.physics.lattice import nn_bonds
 from app.physics.measurement_eval import NoiseModel
-from app.physics.measurements import MeasurementGroup, build_measurement_library
+from app.physics.measurements import MeasurementGroup, build_measurement_library, build_measurement_library_from_operator_map
 from app.physics.measurements import explain_stop_reason
 from app.physics.observables import (
     build_bond_spin_correlator_operators,
@@ -94,6 +100,7 @@ class HubbardGameStateService:
         self.solver_registry.register(MeanFieldSolver())
         self.phase_inference = PhaseInferenceEngine()
         self.qprobe_inference = QProbeInferenceEngine()
+        self.general_qprobe_inference = QProbeInferenceEngine(DEFAULT_QPROBE_GENERAL_MODEL_PATH)
         self.trust_inference = TrustInferenceEngine()
         self.metrics_reader = MetricsReader()
         self.trust_metrics_reader = TrustMetricsReader()
@@ -241,24 +248,43 @@ class HubbardGameStateService:
     def recommend_qprobe_plan(self, payload: QProbeRequest) -> MeasurementPlanResponse:
         self._ensure_state()
         assert self.statevector is not None
+        assert self.problem_spec is not None
         observables = self.get_observables()
-        result = search_minimal_measurement_plan(
-            Lx=self.config.Lx,
-            Ly=self.config.Ly,
-            t=self.config.t,
+        target_names, operator_map = resolve_observable_requests(
+            problem=self.problem_spec,
+            registry=self.observable_registry,
+            target_names=payload.targets,
+            observable_specs=payload.observable_specs,
+        )
+        measurement_library = build_measurement_library_from_operator_map(operator_map)
+        support_map = group_support_map_for_targets(measurement_library, target_names)
+        result = search_minimal_measurement_plan_with_operator_map(
             state=self.statevector,
-            target_observables=tuple(payload.targets),
+            operator_map=operator_map,
+            target_observables=target_names,
             tolerance=payload.tolerance,
             shots_per_group=payload.shots_per_group,
             noise_model=NoiseModel(readout_flip_prob=payload.readout_flip_prob),
             seed=payload.seed,
         )
-        qprobe_features = self._build_qprobe_features(payload, observables)
-        ml_prediction = self.qprobe_inference.predict(qprobe_features)
+        ml_prediction = None
+        if self._supports_ml_qprobe(payload, target_names):
+            qprobe_features = self._build_qprobe_features(payload, observables)
+            ml_prediction = self.qprobe_inference.predict(qprobe_features)
+        if ml_prediction is None:
+            qprobe_features_general = build_qprobe_operator_feature_vector(
+                problem=self.problem_spec,
+                operator_map=operator_map,
+                target_names=target_names,
+                tolerance=payload.tolerance,
+                shots_per_group=payload.shots_per_group,
+                readout_flip_prob=payload.readout_flip_prob,
+            )
+            ml_prediction = self.general_qprobe_inference.predict(qprobe_features_general)
         if ml_prediction is None:
             ml_response = MLQProbePredictionResponse(
                 available=False,
-                model_path=str(self.qprobe_inference.model_path),
+                model_path=str(self.general_qprobe_inference.model_path),
             )
         else:
             ml_response = MLQProbePredictionResponse(
@@ -277,9 +303,13 @@ class HubbardGameStateService:
             estimated=result.estimated,
             abs_error=result.abs_error,
             max_abs_error=result.max_abs_error,
-            full_groups=[self._measurement_group_response(group) for group in result.full_plan.groups],
+            full_groups=[
+                self._measurement_group_response(group, sorted(support_map.get(group.name, [])))
+                for group in result.full_plan.groups
+            ],
             recommended_groups=[
-                self._measurement_group_response(group) for group in result.recommended_plan.groups
+                self._measurement_group_response(group, sorted(support_map.get(group.name, [])))
+                for group in result.recommended_plan.groups
             ],
             ml_qprobe=ml_response,
             message=result.message,
@@ -288,12 +318,19 @@ class HubbardGameStateService:
     def run_adaptive_qprobe(self, payload: QProbeRequest) -> AdaptiveMeasurementPlanResponse:
         self._ensure_state()
         assert self.statevector is not None
-        result = search_adaptive_measurement_plan(
-            Lx=self.config.Lx,
-            Ly=self.config.Ly,
-            t=self.config.t,
+        assert self.problem_spec is not None
+        target_names, operator_map = resolve_observable_requests(
+            problem=self.problem_spec,
+            registry=self.observable_registry,
+            target_names=payload.targets,
+            observable_specs=payload.observable_specs,
+        )
+        measurement_library = build_measurement_library_from_operator_map(operator_map)
+        support_map = group_support_map_for_targets(measurement_library, target_names)
+        result = search_adaptive_measurement_plan_with_operator_map(
             state=self.statevector,
-            target_observables=tuple(payload.targets),
+            operator_map=operator_map,
+            target_observables=target_names,
             tolerance=payload.tolerance,
             shots_per_group=payload.shots_per_group,
             noise_model=NoiseModel(readout_flip_prob=payload.readout_flip_prob),
@@ -313,7 +350,7 @@ class HubbardGameStateService:
             max_abs_error=result.max_abs_error,
             max_uncertainty=result.max_uncertainty,
             oracle_benchmark_within_tolerance=result.oracle_benchmark_within_tolerance,
-            steps=[self._adaptive_step_response(step) for step in result.steps],
+            steps=[self._adaptive_step_response(step, support_map) for step in result.steps],
             message=f"{result.message} {explain_stop_reason(result.success, result.max_uncertainty, result.tolerance)}",
         )
 
@@ -467,6 +504,11 @@ class HubbardGameStateService:
             dtype=np.float32,
         )
 
+    @staticmethod
+    def _supports_ml_qprobe(payload: QProbeRequest, target_names: tuple[str, ...]) -> bool:
+        legacy_targets = {"D", "n", "Ms2", "K", "Cs_max"}
+        return not payload.observable_specs and set(target_names).issubset(legacy_targets)
+
     def _build_trust_features(self, cheap_result) -> np.ndarray:
         assert self.problem_spec is not None
         return build_trust_feature_vector(self.problem_spec, cheap_result).numpy()
@@ -506,10 +548,15 @@ class HubbardGameStateService:
             cost=group.cost,
         )
 
-    def _adaptive_step_response(self, step: AdaptiveMeasurementStep) -> AdaptiveMeasurementStepResponse:
+    def _adaptive_step_response(
+        self,
+        step: AdaptiveMeasurementStep,
+        support_map: dict[str, set[str]] | None = None,
+    ) -> AdaptiveMeasurementStepResponse:
+        targets = sorted(support_map.get(step.chosen_group.name, [])) if support_map is not None else None
         return AdaptiveMeasurementStepResponse(
             step_index=step.step_index,
-            chosen_group=self._measurement_group_response(step.chosen_group),
+            chosen_group=self._measurement_group_response(step.chosen_group, targets),
             current_cost=step.plan.cost,
             covered_targets=list(step.covered_targets),
             unresolved_targets=list(step.unresolved_targets),

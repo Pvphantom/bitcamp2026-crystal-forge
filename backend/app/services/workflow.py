@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.analysis.runtime_intrinsic_corrmap import (
+    analyze_runtime_intrinsic_corrmap,
+    apply_runtime_intrinsic_overlay,
+)
+from app.analysis.intrinsic_feature_vector import build_runtime_augmented_features
 from app.analysis.solver_compare import compare_solver_results
+from app.analysis.trust_features import build_trust_feature_vector
 from app.domain.models import (
     AdaptiveMeasurementPlanResponse,
     AdaptiveMeasurementStepResponse,
     GenericAnalysisResponse,
+    GenericRoutingResponse,
     GenericProblemRequest,
     GenericSolverResultResponse,
     GenericTrustResponse,
@@ -17,14 +24,24 @@ from app.domain.models import (
     WorkflowDecisionResponse,
 )
 from app.domain.problem_spec import ProblemSpec
+from app.ml.infer import HybridCorrMapInferenceEngine, RoutingInferenceEngine
+from app.observables.request_compiler import resolve_observable_requests
 from app.observables.registry import build_default_observable_registry
 from app.optimization.measurement_plan import (
     AdaptiveMeasurementStep,
+    group_support_map_for_targets,
     search_adaptive_measurement_plan_for_problem,
+    search_adaptive_measurement_plan_with_operator_map,
     search_minimal_measurement_plan_for_problem,
+    search_minimal_measurement_plan_with_operator_map,
 )
 from app.physics.measurement_eval import NoiseModel
-from app.physics.measurements import MeasurementGroup, build_measurement_library_for_problem, explain_stop_reason
+from app.physics.measurements import (
+    MeasurementGroup,
+    build_measurement_library_for_problem,
+    build_measurement_library_from_operator_map,
+    explain_stop_reason,
+)
 from app.solvers.exact_ed import ExactEDSolver
 from app.solvers.mean_field import MeanFieldSolver
 from app.solvers.registry import SolverRegistry
@@ -41,6 +58,8 @@ class WorkflowService:
         self.solver_registry.register(MeanFieldSolver())
         self.solver_registry.register(TFIMMeanFieldSolver())
         self.solver_registry.register(VQESolver(observable_registry=self.observable_registry))
+        self.hybrid_corrmap_inference = HybridCorrMapInferenceEngine()
+        self.routing_inference = RoutingInferenceEngine()
 
     def analyze(self, payload: GenericProblemRequest) -> GenericAnalysisResponse:
         problem = self._build_problem(payload)
@@ -51,57 +70,60 @@ class WorkflowService:
         strong_solver_name = "vqe" if self.solver_registry.supports("vqe", problem) else None
         strong = self.solver_registry.get(strong_solver_name).solve(problem) if strong_solver_name else None
         comparison = compare_solver_results(problem, exact, cheap)
-        needs_escalation = comparison.risk_label in {"warning", "unsafe"}
-        escalation_triggered = needs_escalation
-        fallback_exact_escalation = needs_escalation and strong is None
-        if needs_escalation and strong is not None:
-            active_solver = strong.solver_name
-            measurement_mode = "quantum_follow_on"
-            recommendation = (
-                "Cheap solver looks unreliable here. Escalate to the quantum variational solver, then use QProbe to reduce readout cost."
-            )
-        elif fallback_exact_escalation:
-            active_solver = exact.solver_name
-            measurement_mode = "oracle_fallback"
-            recommendation = (
-                "Cheap solver looks unreliable here, but no strong quantum solver is registered for this model family yet. Fall back to the exact oracle on small systems."
-            )
-        else:
-            active_solver = cheap.solver_name
-            measurement_mode = "not_needed"
-            recommendation = (
-                "Cheap solver is probably sufficient here. No escalation is needed, so QProbe is only a benchmark tool for this case."
-            )
+        routing = self._routing_response(problem, cheap)
+        route_label = (
+            routing.route_label
+            if routing is not None and not routing.abstained
+            else self._legacy_route_label(problem, comparison.risk_label, strong is not None)
+        )
+        (
+            escalation_triggered,
+            active_solver,
+            measurement_mode,
+            recommendation,
+        ) = self._workflow_decision_from_route(
+            route_label=route_label,
+            cheap_solver_name=cheap.solver_name,
+            strong_solver_name=strong.solver_name if strong is not None else None,
+            exact_solver_name=exact.solver_name,
+            model_family=problem.model_family,
+        )
 
         qprobe_exact_response = None
         qprobe_adaptive_response = None
 
-        targets = tuple(
-            payload.qprobe_targets or self.observable_registry.names_for_family(problem.model_family)[:3]
+        targets, qprobe_operator_map = resolve_observable_requests(
+            problem=problem,
+            registry=self.observable_registry,
+            target_names=payload.qprobe_targets,
+            observable_specs=payload.qprobe_observable_specs,
         )
-        measurement_library = build_measurement_library_for_problem(problem, registry=self.observable_registry)
+        measurement_library = (
+            build_measurement_library_from_operator_map(qprobe_operator_map)
+            if payload.qprobe_observable_specs
+            else build_measurement_library_for_problem(problem, registry=self.observable_registry)
+        )
+        qprobe_support_map = group_support_map_for_targets(measurement_library, targets)
         if escalation_triggered and strong is not None:
             measurement_state_result = strong
             measurement_state_solver = measurement_state_result.solver_name
-            qprobe_exact = search_minimal_measurement_plan_for_problem(
-                problem=problem,
+            qprobe_exact = search_minimal_measurement_plan_with_operator_map(
                 state=measurement_state_result.statevector,
+                operator_map=qprobe_operator_map,
                 target_observables=targets,
                 tolerance=payload.qprobe_tolerance,
                 shots_per_group=payload.qprobe_shots_per_group,
                 noise_model=NoiseModel(readout_flip_prob=payload.qprobe_readout_flip_prob),
                 seed=payload.qprobe_seed,
-                registry=self.observable_registry,
             )
-            qprobe_adaptive = search_adaptive_measurement_plan_for_problem(
-                problem=problem,
+            qprobe_adaptive = search_adaptive_measurement_plan_with_operator_map(
                 state=measurement_state_result.statevector,
+                operator_map=qprobe_operator_map,
                 target_observables=targets,
                 tolerance=payload.qprobe_tolerance,
                 shots_per_group=payload.qprobe_shots_per_group,
                 noise_model=NoiseModel(readout_flip_prob=payload.qprobe_readout_flip_prob),
                 seed=payload.qprobe_seed,
-                registry=self.observable_registry,
             )
             qprobe_exact_response = MeasurementPlanResponse(
                 success=qprobe_exact.success,
@@ -116,8 +138,14 @@ class WorkflowService:
                 estimated=qprobe_exact.estimated,
                 abs_error=qprobe_exact.abs_error,
                 max_abs_error=qprobe_exact.max_abs_error,
-                full_groups=[self._measurement_group_response(group) for group in qprobe_exact.full_plan.groups],
-                recommended_groups=[self._measurement_group_response(group) for group in qprobe_exact.recommended_plan.groups],
+                full_groups=[
+                    self._measurement_group_response(group, sorted(qprobe_support_map.get(group.name, [])))
+                    for group in qprobe_exact.full_plan.groups
+                ],
+                recommended_groups=[
+                    self._measurement_group_response(group, sorted(qprobe_support_map.get(group.name, [])))
+                    for group in qprobe_exact.recommended_plan.groups
+                ],
                 ml_qprobe=MLQProbePredictionResponse(available=False, model_path=""),
                 message=qprobe_exact.message,
             )
@@ -137,7 +165,7 @@ class WorkflowService:
                 max_abs_error=qprobe_adaptive.max_abs_error,
                 max_uncertainty=qprobe_adaptive.max_uncertainty,
                 oracle_benchmark_within_tolerance=qprobe_adaptive.oracle_benchmark_within_tolerance,
-                steps=[self._adaptive_step_response(step) for step in qprobe_adaptive.steps],
+                steps=[self._adaptive_step_response(step, qprobe_support_map) for step in qprobe_adaptive.steps],
                 message=f"{qprobe_adaptive.message} {explain_stop_reason(qprobe_adaptive.success, qprobe_adaptive.max_uncertainty, qprobe_adaptive.tolerance)}",
             )
 
@@ -153,6 +181,7 @@ class WorkflowService:
                 active_solver=active_solver,
                 measurement_mode=measurement_mode,
                 recommendation=recommendation,
+                route_label=route_label,
             ),
             exact_solver=self._solver_result_response(exact),
             cheap_solver=self._solver_result_response(cheap),
@@ -165,6 +194,7 @@ class WorkflowService:
                 risk_label=comparison.risk_label,
                 recommended_action=self._trust_action(comparison.risk_label),
             ),
+            routing=routing,
             measurement_library=MeasurementLibraryResponse(
                 observables={
                     name: [self._measurement_group_response(group, [name]) for group in groups]
@@ -204,6 +234,95 @@ class WorkflowService:
             return "check_exact_or_stronger_solver"
         return "escalate_to_exact_or_advanced_method"
 
+    def _routing_response(self, problem: ProblemSpec, cheap_result) -> GenericRoutingResponse | None:
+        features = build_trust_feature_vector(problem, cheap_result)
+        try:
+            runtime_intrinsic = analyze_runtime_intrinsic_corrmap(problem, cheap_result=cheap_result)
+        except TypeError:
+            runtime_intrinsic = analyze_runtime_intrinsic_corrmap(problem)
+        try:
+            hybrid_features = build_runtime_augmented_features(features, runtime_intrinsic)
+        except Exception:
+            hybrid_features = features
+        prediction = self.hybrid_corrmap_inference.predict(hybrid_features)
+        if prediction is None:
+            prediction = self.routing_inference.predict(features)
+        prediction = apply_runtime_intrinsic_overlay(prediction, runtime_intrinsic)
+        return GenericRoutingResponse(
+            route_label=str(prediction["label"]),
+            recommended_action=str(prediction["recommended_action"]),
+            candidate_scores=dict(prediction.get("candidate_scores", {})),
+            abstained=bool(prediction.get("abstained", False)),
+            abstain_reason=prediction.get("abstain_reason"),
+            intrinsic_label=prediction.get("intrinsic_label"),
+            intrinsic_score=prediction.get("intrinsic_score"),
+            intrinsic_reasons=list(prediction.get("intrinsic_reasons", [])),
+        )
+
+    @staticmethod
+    def _legacy_route_label(problem: ProblemSpec, risk_label: str, strong_solver_available: bool) -> str:
+        if risk_label == "safe":
+            return "mean_field"
+        if strong_solver_available and problem.model_family == "tfim":
+            return "quantum_frontier"
+        return "scalable_classical"
+
+    @staticmethod
+    def _workflow_decision_from_route(
+        *,
+        route_label: str,
+        cheap_solver_name: str,
+        strong_solver_name: str | None,
+        exact_solver_name: str,
+        model_family: str,
+    ) -> tuple[bool, str, str, str]:
+        if route_label == "mean_field":
+            return (
+                False,
+                cheap_solver_name,
+                "not_needed",
+                "Cheap solver is probably sufficient here. No escalation is needed, so QProbe is only a benchmark tool for this case.",
+            )
+        if route_label == "quantum_frontier" and strong_solver_name is not None:
+            return (
+                True,
+                strong_solver_name,
+                "quantum_follow_on",
+                "Routing CorrMap recommends the quantum branch here. Escalate to the variational quantum solver, then use QProbe to reduce readout cost.",
+            )
+        if route_label in {"quantum_frontier", "scalable_classical", "uncertain"}:
+            fallback_message = (
+                "Routing CorrMap did not keep the cheap solver path. No reliable quantum route is available here, so fall back to the exact oracle on small systems."
+                if route_label != "uncertain"
+                else "Routing CorrMap abstained or requested a stronger method. Fall back to the exact oracle on small systems."
+            )
+            if model_family == "tfim" and strong_solver_name is not None and route_label == "scalable_classical":
+                return (
+                    True,
+                    exact_solver_name,
+                    "oracle_fallback",
+                    "Routing CorrMap prefers a stronger scalable-classical route here, but only the exact oracle is implemented locally. Fall back to the exact oracle on small systems.",
+                )
+            if route_label == "quantum_frontier" and strong_solver_name is not None:
+                return (
+                    True,
+                    strong_solver_name,
+                    "quantum_follow_on",
+                    "Routing CorrMap recommends the quantum branch here. Escalate to the variational quantum solver, then use QProbe to reduce readout cost.",
+                )
+            return (
+                True,
+                exact_solver_name,
+                "oracle_fallback",
+                fallback_message,
+            )
+        return (
+            False,
+            cheap_solver_name,
+            "not_needed",
+            "Cheap solver is probably sufficient here. No escalation is needed, so QProbe is only a benchmark tool for this case.",
+        )
+
     @staticmethod
     def _bond_key(i: int, j: int) -> str:
         return f"{i}-{j}"
@@ -233,10 +352,15 @@ class WorkflowService:
             cost=group.cost,
         )
 
-    def _adaptive_step_response(self, step: AdaptiveMeasurementStep) -> AdaptiveMeasurementStepResponse:
+    def _adaptive_step_response(
+        self,
+        step: AdaptiveMeasurementStep,
+        support_map: dict[str, set[str]] | None = None,
+    ) -> AdaptiveMeasurementStepResponse:
+        targets = sorted(support_map.get(step.chosen_group.name, [])) if support_map is not None else []
         return AdaptiveMeasurementStepResponse(
             step_index=step.step_index,
-            chosen_group=self._measurement_group_response(step.chosen_group),
+            chosen_group=self._measurement_group_response(step.chosen_group, targets),
             current_cost=step.plan.cost,
             covered_targets=list(step.covered_targets),
             unresolved_targets=list(step.unresolved_targets),

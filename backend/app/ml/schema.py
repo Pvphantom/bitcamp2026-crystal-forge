@@ -22,11 +22,25 @@ DEFAULT_METRICS_PATH = ARTIFACTS_DIR / "gnn_metrics.json"
 DEFAULT_QPROBE_DATASET = ARTIFACTS_DIR / "qprobe_dataset.pt"
 DEFAULT_QPROBE_MODEL_PATH = ARTIFACTS_DIR / "qprobe_mlp.pt"
 DEFAULT_QPROBE_METRICS_PATH = ARTIFACTS_DIR / "qprobe_metrics.json"
+DEFAULT_QPROBE_GENERAL_DATASET = ARTIFACTS_DIR / "qprobe_general_dataset.pt"
+DEFAULT_QPROBE_GENERAL_MODEL_PATH = ARTIFACTS_DIR / "qprobe_general_mlp.pt"
+DEFAULT_QPROBE_GENERAL_METRICS_PATH = ARTIFACTS_DIR / "qprobe_general_metrics.json"
 TRUST_LABELS = ["safe", "warning", "unsafe"]
 TRUST_TO_INDEX = {label: index for index, label in enumerate(TRUST_LABELS)}
 DEFAULT_TRUST_DATASET = ARTIFACTS_DIR / "trust_dataset.pt"
 DEFAULT_TRUST_MODEL_PATH = ARTIFACTS_DIR / "trust_model.pt"
 DEFAULT_TRUST_METRICS_PATH = ARTIFACTS_DIR / "trust_metrics.json"
+ROUTING_LABELS = ["mean_field", "scalable_classical", "quantum_frontier", "uncertain"]
+ROUTING_TO_INDEX = {label: index for index, label in enumerate(ROUTING_LABELS)}
+REFERENCE_QUALITY_LABELS = ["strong", "weak", "unknown"]
+DEFAULT_ROUTING_DATASET = ARTIFACTS_DIR / "routing_dataset.pt"
+DEFAULT_ROUTING_MODEL_PATH = ARTIFACTS_DIR / "routing_model.pt"
+DEFAULT_ROUTING_METRICS_PATH = ARTIFACTS_DIR / "routing_metrics.json"
+INTRINSIC_RISK_LABELS = ["stable_classical", "fragile_classical", "frontier_or_uncertain"]
+INTRINSIC_RISK_TO_INDEX = {label: index for index, label in enumerate(INTRINSIC_RISK_LABELS)}
+DEFAULT_INTRINSIC_CORRMAP_DATASET = ARTIFACTS_DIR / "intrinsic_corrmap_dataset.pt"
+DEFAULT_HYBRID_CORRMAP_MODEL_PATH = ARTIFACTS_DIR / "hybrid_corrmap_model.pt"
+DEFAULT_HYBRID_CORRMAP_METRICS_PATH = ARTIFACTS_DIR / "hybrid_corrmap_metrics.json"
 
 
 @dataclass
@@ -110,6 +124,69 @@ def build_graph_sample(
         label=PHASE_TO_INDEX[label],
         metadata=metadata,
     )
+
+
+@dataclass
+class SolverBenchmarkOutcome:
+    solver_name: str
+    family: str
+    succeeded: bool
+    runtime_s: float | None = None
+    peak_memory_mb: float | None = None
+    observables: dict[str, float] | None = None
+    abs_error: dict[str, float] | None = None
+    rel_error: dict[str, float] | None = None
+    max_abs_error: float | None = None
+    energy: float | None = None
+    energy_error: float | None = None
+    cost_class: str | None = None
+    notes: list[str] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "solver_name": self.solver_name,
+            "family": self.family,
+            "succeeded": self.succeeded,
+            "runtime_s": self.runtime_s,
+            "peak_memory_mb": self.peak_memory_mb,
+            "observables": dict(self.observables or {}),
+            "abs_error": dict(self.abs_error or {}),
+            "rel_error": dict(self.rel_error or {}),
+            "max_abs_error": self.max_abs_error,
+            "energy": self.energy,
+            "energy_error": self.energy_error,
+            "cost_class": self.cost_class,
+            "notes": list(self.notes or []),
+        }
+
+
+@dataclass
+class RoutingBenchmarkSample:
+    features: torch.Tensor
+    feature_groups: dict[str, torch.Tensor]
+    route_label: str
+    problem_metadata: dict[str, Any]
+    solver_outcomes: dict[str, SolverBenchmarkOutcome]
+    reference_solver: str
+    reference_quality: str
+    label_source: str
+    notes: list[str] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "features": self.features,
+            "feature_groups": {name: tensor.clone() for name, tensor in self.feature_groups.items()},
+            "route_label": self.route_label,
+            "problem_metadata": self.problem_metadata,
+            "solver_outcomes": {
+                name: outcome.to_dict()
+                for name, outcome in self.solver_outcomes.items()
+            },
+            "reference_solver": self.reference_solver,
+            "reference_quality": self.reference_quality,
+            "label_source": self.label_source,
+            "notes": list(self.notes or []),
+        }
 
 
 def collate_graph_samples(samples: list[dict[str, Any]]) -> dict[str, torch.Tensor | list[dict[str, Any]]]:

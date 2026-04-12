@@ -1,0 +1,301 @@
+from __future__ import annotations
+
+import argparse
+import json
+from collections import Counter
+from pathlib import Path
+
+import torch
+from sklearn.model_selection import train_test_split
+from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
+
+from app.ml.hybrid_corrmap_model import HybridCorrMapMLP
+from app.ml.schema import (
+    ARTIFACTS_DIR,
+    DEFAULT_HYBRID_CORRMAP_METRICS_PATH,
+    DEFAULT_HYBRID_CORRMAP_MODEL_PATH,
+    DEFAULT_INTRINSIC_CORRMAP_DATASET,
+    DEFAULT_ROUTING_DATASET,
+    INTRINSIC_RISK_LABELS,
+    INTRINSIC_RISK_TO_INDEX,
+    ROUTING_LABELS,
+    ROUTING_TO_INDEX,
+)
+from scripts.train_routing_model import filter_samples as filter_routing_samples
+
+
+INTRINSIC_TO_ROUTE = {
+    "stable_classical": "mean_field",
+    "fragile_classical": "scalable_classical",
+    "frontier_or_uncertain": "quantum_frontier",
+}
+
+
+def _split(samples: list[dict], label_key: str) -> tuple[list[dict], list[dict], list[dict]]:
+    counts = Counter(sample[label_key] for sample in samples)
+    stratify = None if not counts or min(counts.values()) < 2 else [sample[label_key] for sample in samples]
+    train_samples, test_samples = train_test_split(samples, test_size=0.2, random_state=41, stratify=stratify)
+    train_counts = Counter(sample[label_key] for sample in train_samples)
+    stratify_train = None if not train_counts or min(train_counts.values()) < 2 else [sample[label_key] for sample in train_samples]
+    train_samples, val_samples = train_test_split(train_samples, test_size=0.25, random_state=43, stratify=stratify_train)
+    return train_samples, val_samples, test_samples
+
+
+def _normalize(samples: list[dict], mean: torch.Tensor, std: torch.Tensor) -> list[dict]:
+    return [{**sample, "features": (sample["features"] - mean) / std} for sample in samples]
+
+
+def _route_loader(samples: list[dict], batch_size: int, shuffle: bool) -> DataLoader:
+    features = torch.stack([sample["features"] for sample in samples], dim=0)
+    labels = torch.tensor([ROUTING_TO_INDEX[sample["route_label"]] for sample in samples], dtype=torch.long)
+    return DataLoader(TensorDataset(features, labels), batch_size=batch_size, shuffle=shuffle)
+
+
+def _intrinsic_loader(samples: list[dict], batch_size: int, shuffle: bool) -> DataLoader:
+    features = torch.stack([sample["features"] for sample in samples], dim=0)
+    labels = torch.tensor([INTRINSIC_RISK_TO_INDEX[sample["intrinsic_label"]] for sample in samples], dtype=torch.long)
+    return DataLoader(TensorDataset(features, labels), batch_size=batch_size, shuffle=shuffle)
+
+
+def _classification_accuracy(logits: torch.Tensor, labels: torch.Tensor) -> float:
+    return float((torch.argmax(logits, dim=-1) == labels).float().mean().item())
+
+
+def train(
+    *,
+    routing_dataset_path: Path,
+    intrinsic_dataset_path: Path,
+    model_out: Path,
+    metrics_out: Path,
+    epochs: int,
+    batch_size: int,
+    learning_rate: float,
+) -> dict[str, object]:
+    raw_routing = torch.load(routing_dataset_path, map_location="cpu")
+    routing_samples = filter_routing_samples(
+        raw_routing,
+        allowed_reference_qualities={"strong"},
+        include_uncertain=False,
+    )
+    intrinsic_samples = torch.load(intrinsic_dataset_path, map_location="cpu")
+
+    route_train, route_val, route_test = _split(routing_samples, "route_label")
+    intr_train, intr_val, intr_test = _split(intrinsic_samples, "intrinsic_label")
+
+    normalization_features = torch.stack(
+        [sample["features"] for sample in route_train + intr_train],
+        dim=0,
+    )
+    feature_mean = normalization_features.mean(dim=0)
+    feature_std = normalization_features.std(dim=0).clamp_min(1e-6)
+
+    route_train = _normalize(route_train, feature_mean, feature_std)
+    route_val = _normalize(route_val, feature_mean, feature_std)
+    route_test = _normalize(route_test, feature_mean, feature_std)
+    intr_train = _normalize(intr_train, feature_mean, feature_std)
+    intr_val = _normalize(intr_val, feature_mean, feature_std)
+    intr_test = _normalize(intr_test, feature_mean, feature_std)
+
+    route_train_loader = _route_loader(route_train, batch_size=batch_size, shuffle=True)
+    route_val_loader = _route_loader(route_val, batch_size=batch_size, shuffle=False)
+    route_test_loader = _route_loader(route_test, batch_size=batch_size, shuffle=False)
+    intr_train_loader = _intrinsic_loader(intr_train, batch_size=batch_size, shuffle=True)
+    intr_val_loader = _intrinsic_loader(intr_val, batch_size=batch_size, shuffle=False)
+    intr_test_loader = _intrinsic_loader(intr_test, batch_size=batch_size, shuffle=False)
+
+    model = HybridCorrMapMLP(
+        input_dim=int(feature_mean.shape[0]),
+        hidden_dim=64,
+        num_routes=len(ROUTING_LABELS),
+        num_intrinsic_labels=len(INTRINSIC_RISK_LABELS),
+    )
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+    route_weights = torch.tensor(
+        [1.0 / Counter(sample["route_label"] for sample in route_train).get(label, 1) for label in ROUTING_LABELS],
+        dtype=torch.float32,
+    )
+    route_weights = route_weights / route_weights.sum() * len(ROUTING_LABELS)
+    intrinsic_weights = torch.tensor(
+        [1.0 / Counter(sample["intrinsic_label"] for sample in intr_train).get(label, 1) for label in INTRINSIC_RISK_LABELS],
+        dtype=torch.float32,
+    )
+    intrinsic_weights = intrinsic_weights / intrinsic_weights.sum() * len(INTRINSIC_RISK_LABELS)
+    route_loss = nn.CrossEntropyLoss(weight=route_weights)
+    intrinsic_loss = nn.CrossEntropyLoss(weight=intrinsic_weights)
+
+    normalized_train_route_features = torch.stack([sample["features"] for sample in route_train], dim=0)
+    ood_distance_threshold = float(torch.max(torch.linalg.norm(normalized_train_route_features, dim=-1)).item() * 1.1 + 1e-6)
+    best_state = None
+    best_val = float("inf")
+    best_confidence_threshold = 0.55
+    patience = 30
+    stale = 0
+
+    for _ in range(epochs):
+        model.train()
+        intr_iter = iter(intr_train_loader)
+        for route_features, route_labels in route_train_loader:
+            try:
+                intr_features, intr_labels = next(intr_iter)
+            except StopIteration:
+                intr_iter = iter(intr_train_loader)
+                intr_features, intr_labels = next(intr_iter)
+            optimizer.zero_grad()
+            route_outputs = model(route_features)
+            intr_outputs = model(intr_features)
+            pseudo_route_labels = torch.tensor(
+                [
+                    ROUTING_TO_INDEX[INTRINSIC_TO_ROUTE[INTRINSIC_RISK_LABELS[index]]]
+                    for index in intr_labels.tolist()
+                ],
+                dtype=torch.long,
+            )
+            frontier_mask = torch.tensor(
+                [1.0 if INTRINSIC_RISK_LABELS[index] == "frontier_or_uncertain" else 0.0 for index in intr_labels.tolist()],
+                dtype=torch.float32,
+            )
+            route_probs_intr = torch.softmax(intr_outputs["route_logits"], dim=-1)
+            mean_field_probs_intr = route_probs_intr[:, ROUTING_TO_INDEX["mean_field"]]
+            frontier_penalty = torch.mean(frontier_mask * mean_field_probs_intr)
+            loss = (
+                route_loss(route_outputs["route_logits"], route_labels)
+                + intrinsic_loss(intr_outputs["intrinsic_logits"], intr_labels)
+                + 0.6 * route_loss(intr_outputs["route_logits"], pseudo_route_labels)
+                + 0.4 * frontier_penalty
+            )
+            loss.backward()
+            optimizer.step()
+
+        val_route_acc = _eval_route_accuracy(model, route_val_loader)
+        val_intrinsic_acc = _eval_intrinsic_accuracy(model, intr_val_loader)
+        confidence_threshold = _select_confidence_threshold(model, route_val_loader, ood_distance_threshold)
+        val_score = (1.0 - val_route_acc) + (1.0 - val_intrinsic_acc)
+        if val_score < best_val:
+            best_val = val_score
+            best_state = {key: value.cpu() for key, value in model.state_dict().items()}
+            best_confidence_threshold = confidence_threshold
+            stale = 0
+        else:
+            stale += 1
+        if stale >= patience:
+            break
+
+    assert best_state is not None
+    model.load_state_dict(best_state)
+
+    metrics = {
+        "routing_train_accuracy": _eval_route_accuracy(model, route_train_loader),
+        "routing_val_accuracy": _eval_route_accuracy(model, route_val_loader),
+        "routing_test_accuracy": _eval_route_accuracy(model, route_test_loader),
+        "intrinsic_train_accuracy": _eval_intrinsic_accuracy(model, intr_train_loader),
+        "intrinsic_val_accuracy": _eval_intrinsic_accuracy(model, intr_val_loader),
+        "intrinsic_test_accuracy": _eval_intrinsic_accuracy(model, intr_test_loader),
+        "confidence_threshold": best_confidence_threshold,
+        "ood_distance_threshold": ood_distance_threshold,
+        "num_routing_samples": len(routing_samples),
+        "num_intrinsic_samples": len(intrinsic_samples),
+    }
+
+    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "model_state": {key: value.cpu() for key, value in model.state_dict().items()},
+            "model_config": {
+                "input_dim": int(feature_mean.shape[0]),
+                "hidden_dim": 64,
+                "num_routes": len(ROUTING_LABELS),
+                "num_intrinsic_labels": len(INTRINSIC_RISK_LABELS),
+            },
+            "route_labels": ROUTING_LABELS,
+            "intrinsic_labels": INTRINSIC_RISK_LABELS,
+            "feature_mean": feature_mean,
+            "feature_std": feature_std,
+            "confidence_threshold": best_confidence_threshold,
+            "ood_distance_threshold": ood_distance_threshold,
+        },
+        model_out,
+    )
+    metrics_out.write_text(json.dumps(metrics, indent=2))
+    return metrics
+
+
+def _eval_route_accuracy(model: HybridCorrMapMLP, loader: DataLoader) -> float:
+    model.eval()
+    accuracies = []
+    with torch.no_grad():
+        for features, labels in loader:
+            outputs = model(features)
+            accuracies.append(_classification_accuracy(outputs["route_logits"], labels))
+    return float(sum(accuracies) / len(accuracies)) if accuracies else 0.0
+
+
+def _eval_intrinsic_accuracy(model: HybridCorrMapMLP, loader: DataLoader) -> float:
+    model.eval()
+    accuracies = []
+    with torch.no_grad():
+        for features, labels in loader:
+            outputs = model(features)
+            accuracies.append(_classification_accuracy(outputs["intrinsic_logits"], labels))
+    return float(sum(accuracies) / len(accuracies)) if accuracies else 0.0
+
+
+def _select_confidence_threshold(model: HybridCorrMapMLP, loader: DataLoader, ood_distance_threshold: float) -> float:
+    candidates = [0.35, 0.45, 0.55, 0.65, 0.75]
+    best = candidates[0]
+    best_score = float("inf")
+    model.eval()
+    for threshold in candidates:
+        false_mean_field = 0
+        mean_field_predictions = 0
+        abstentions = 0
+        total = 0
+        with torch.no_grad():
+            for features, labels in loader:
+                outputs = model(features)
+                probs = torch.softmax(outputs["route_logits"], dim=-1)
+                confidences, pred = torch.max(probs, dim=-1)
+                distances = torch.linalg.norm(features, dim=-1)
+                for truth, p, c, d in zip(labels.tolist(), pred.tolist(), confidences.tolist(), distances.tolist(), strict=True):
+                    total += 1
+                    if d > ood_distance_threshold or c < threshold:
+                        abstentions += 1
+                        continue
+                    if ROUTING_LABELS[p] == "mean_field":
+                        mean_field_predictions += 1
+                        if ROUTING_LABELS[truth] != "mean_field":
+                            false_mean_field += 1
+        false_rate = 0.0 if mean_field_predictions == 0 else false_mean_field / mean_field_predictions
+        abstention_rate = 0.0 if total == 0 else abstentions / total
+        score = 4.0 * false_rate + 0.25 * abstention_rate
+        if score < best_score:
+            best_score = score
+            best = threshold
+    return best
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--routing-dataset", type=Path, default=DEFAULT_ROUTING_DATASET)
+    parser.add_argument("--intrinsic-dataset", type=Path, default=DEFAULT_INTRINSIC_CORRMAP_DATASET)
+    parser.add_argument("--model-out", type=Path, default=DEFAULT_HYBRID_CORRMAP_MODEL_PATH)
+    parser.add_argument("--metrics-out", type=Path, default=DEFAULT_HYBRID_CORRMAP_METRICS_PATH)
+    parser.add_argument("--epochs", type=int, default=120)
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--learning-rate", type=float, default=1e-3)
+    args = parser.parse_args()
+
+    metrics = train(
+        routing_dataset_path=args.routing_dataset,
+        intrinsic_dataset_path=args.intrinsic_dataset,
+        model_out=args.model_out,
+        metrics_out=args.metrics_out,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
+    )
+    print(json.dumps(metrics, indent=2))
+
+
+if __name__ == "__main__":
+    main()

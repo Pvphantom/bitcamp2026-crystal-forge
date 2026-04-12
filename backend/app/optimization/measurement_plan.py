@@ -13,6 +13,7 @@ from app.physics.measurement_eval import NoiseModel, evaluate_measurement_groups
 from app.physics.measurements import (
     MeasurementGroup,
     build_measurement_library,
+    build_measurement_library_from_operator_map,
     build_measurement_library_for_problem,
 )
 
@@ -159,6 +160,14 @@ def _evaluate_plan(
         exact[observable] = exact_value
         abs_error[observable] = abs(estimated_value - exact_value)
     return estimated, exact, abs_error
+
+
+def group_support_map_for_targets(
+    measurement_library: dict[str, list[MeasurementGroup]],
+    target_observables: tuple[str, ...],
+) -> dict[str, set[str]]:
+    merged_groups = _merged_groups_for_targets(measurement_library, target_observables)
+    return _group_support_map(merged_groups, measurement_library, target_observables)
 
 
 def _estimate_uncertainty(
@@ -329,10 +338,50 @@ def search_minimal_measurement_plan_for_problem(
     seed: int | None = None,
     registry: ObservableRegistry | None = None,
 ) -> MeasurementPlanResult:
-    measurement_library = build_measurement_library_for_problem(
-        problem,
-        registry=registry or build_default_observable_registry(),
+    measurement_library = build_measurement_library_for_problem(problem, registry=registry or build_default_observable_registry())
+    return search_minimal_measurement_plan_with_library(
+        state=state,
+        measurement_library=measurement_library,
+        target_observables=target_observables,
+        tolerance=tolerance,
+        shots_per_group=shots_per_group,
+        noise_model=noise_model,
+        seed=seed,
     )
+
+
+def search_minimal_measurement_plan_with_operator_map(
+    *,
+    state: np.ndarray,
+    operator_map: dict[str, object],
+    target_observables: tuple[str, ...],
+    tolerance: float,
+    shots_per_group: int,
+    noise_model: NoiseModel | None = None,
+    seed: int | None = None,
+) -> MeasurementPlanResult:
+    measurement_library = build_measurement_library_from_operator_map(operator_map)
+    return search_minimal_measurement_plan_with_library(
+        state=state,
+        measurement_library=measurement_library,
+        target_observables=target_observables,
+        tolerance=tolerance,
+        shots_per_group=shots_per_group,
+        noise_model=noise_model,
+        seed=seed,
+    )
+
+
+def search_minimal_measurement_plan_with_library(
+    *,
+    state: np.ndarray,
+    measurement_library: dict[str, list[MeasurementGroup]],
+    target_observables: tuple[str, ...],
+    tolerance: float,
+    shots_per_group: int,
+    noise_model: NoiseModel | None = None,
+    seed: int | None = None,
+) -> MeasurementPlanResult:
     merged_groups = _merged_groups_for_targets(measurement_library, target_observables)
     full_plan = MeasurementPlan(groups=tuple(merged_groups))
     noise = noise_model or NoiseModel()
@@ -524,10 +573,54 @@ def search_adaptive_measurement_plan_for_problem(
     bootstrap_reps: int = 5,
     registry: ObservableRegistry | None = None,
 ) -> AdaptiveMeasurementPlanResult:
-    measurement_library = build_measurement_library_for_problem(
-        problem,
-        registry=registry or build_default_observable_registry(),
+    measurement_library = build_measurement_library_for_problem(problem, registry=registry or build_default_observable_registry())
+    return search_adaptive_measurement_plan_with_library(
+        state=state,
+        measurement_library=measurement_library,
+        target_observables=target_observables,
+        tolerance=tolerance,
+        shots_per_group=shots_per_group,
+        noise_model=noise_model,
+        seed=seed,
+        bootstrap_reps=bootstrap_reps,
     )
+
+
+def search_adaptive_measurement_plan_with_operator_map(
+    *,
+    state: np.ndarray,
+    operator_map: dict[str, object],
+    target_observables: tuple[str, ...],
+    tolerance: float,
+    shots_per_group: int,
+    noise_model: NoiseModel | None = None,
+    seed: int | None = None,
+    bootstrap_reps: int = 5,
+) -> AdaptiveMeasurementPlanResult:
+    measurement_library = build_measurement_library_from_operator_map(operator_map)
+    return search_adaptive_measurement_plan_with_library(
+        state=state,
+        measurement_library=measurement_library,
+        target_observables=target_observables,
+        tolerance=tolerance,
+        shots_per_group=shots_per_group,
+        noise_model=noise_model,
+        seed=seed,
+        bootstrap_reps=bootstrap_reps,
+    )
+
+
+def search_adaptive_measurement_plan_with_library(
+    *,
+    state: np.ndarray,
+    measurement_library: dict[str, list[MeasurementGroup]],
+    target_observables: tuple[str, ...],
+    tolerance: float,
+    shots_per_group: int,
+    noise_model: NoiseModel | None = None,
+    seed: int | None = None,
+    bootstrap_reps: int = 5,
+) -> AdaptiveMeasurementPlanResult:
     merged_groups = _merged_groups_for_targets(measurement_library, target_observables)
     support_map = _group_support_map(merged_groups, measurement_library, target_observables)
     full_plan = MeasurementPlan(groups=tuple(merged_groups))
