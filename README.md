@@ -1,7 +1,5 @@
 # Crystal Forge
 
-This repository is being rebuilt from the backup Schwinger demo into the Hubbard-model project described in the current Bitcamp spec.
-
 The architecture is now:
 
 - `backend/`: Python FastAPI service for Hubbard physics, observables, ML inference, and future Minecraft integration.
@@ -9,8 +7,6 @@ The architecture is now:
 - `docs/`: specs and architecture notes.
 
 ## Current Status
-
-The repo has been restructured, but the backend physics stack is still scaffolded rather than fully implemented. The old Schwinger frontend remains in `frontend/` temporarily until the Hubbard UI replaces it.
 
 ## Layout
 
@@ -67,4 +63,4 @@ uvicorn app.main:app --reload
 
 ## Minecraft Direction
 
-The backend is the long-term product core. The browser UI and any future Minecraft visualization should both consume the same backend state/export schema rather than each embedding simulation logic.
+The backend is the long-term product core. The browser UI and any future Minecraft visualization is secondary to getting some display.
