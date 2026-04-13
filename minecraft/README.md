@@ -97,9 +97,10 @@ Current behavior:
 2. Parses the JSON payload
 3. Stores the most recent payload in memory
 4. Prints a short summary in chat
-5. Builds a first-pass control-room scene directly in-world:
+5. Builds an interactive control-room scene directly in-world:
    - room shell
    - center lattice platform
+   - left control wall
    - Hubbard pedestals or TFIM pillars
    - bond bridges
    - right-side workflow wall
@@ -110,10 +111,10 @@ Current behavior:
 ## Suggested next Fabric milestones
 
 1. Replace block-only indicators with signs, text displays, or richer panels
-2. Add the left control wall for in-world parameter updates
-3. Add animation instead of hard overwrites
-4. Make the QProbe ring reflect group meaning more explicitly
-5. Add adaptive step playback and solver transition lighting
+2. Add animation instead of hard overwrites
+3. Make the QProbe ring reflect group meaning more explicitly
+4. Add adaptive step playback and solver transition lighting
+5. Add dedicated target/tolerance controls on the left wall
 
 ## Example request
 
@@ -156,10 +157,26 @@ can use the same mod jar or dev client as long as:
    - `(0, 64, 0)`
 7. Current visible structures should include:
    - central lattice
+   - left control wall
    - right workflow wall
    - back observables bars
    - rear chamber
    - overhead QProbe ring
+
+### Current control wall interactions
+
+The left wall is now clickable.
+
+- Blue block: switch to TFIM defaults
+- Purple block: switch to Hubbard defaults
+- Lime block near the bottom: rerun the current request
+- Orange blocks on the three parameter rows: decrement the active parameter
+- Green blocks on the three parameter rows: increment the active parameter
+
+Parameter rows:
+
+- TFIM: `J`, `h`, `g`
+- Hubbard: `t`, `U`, `mu`
 
 ### If another person uses the GitHub repo
 

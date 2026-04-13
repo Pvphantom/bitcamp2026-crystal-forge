@@ -14,13 +14,14 @@ public final class CrystalForgeMod implements ModInitializer {
 
     @Override
     public void onInitialize() {
+        CrystalForgeControls.register();
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) ->
             dispatcher.register(
                 CommandManager.literal("crystalforge")
                     .then(CommandManager.literal("refresh")
                         .executes(context -> {
-                            context.getSource().sendFeedback(() -> Text.literal("Crystal Forge: fetching default TFIM workflow..."), false);
-                            boolean ok = CrystalForgeBridge.refresh(CrystalForgeRequests.tfimQuantumEscalation());
+                            context.getSource().sendFeedback(() -> Text.literal("Crystal Forge: refreshing current workflow..."), false);
+                            boolean ok = CrystalForgeBridge.refresh(CrystalForgeSession.currentRequest());
                             if (!ok) {
                                 context.getSource().sendError(Text.literal("Crystal Forge: backend fetch failed. Check the runClient terminal and backend logs."));
                                 return 0;
@@ -38,6 +39,7 @@ public final class CrystalForgeMod implements ModInitializer {
                                     return 0;
                                 }
                                 context.getSource().sendFeedback(() -> Text.literal("Crystal Forge: fetching preset " + preset + "..."), false);
+                                CrystalForgeSession.setCurrentRequest(request);
                                 boolean ok = CrystalForgeBridge.refresh(request);
                                 if (!ok) {
                                     context.getSource().sendError(Text.literal("Crystal Forge: backend fetch failed. Check the runClient terminal and backend logs."));

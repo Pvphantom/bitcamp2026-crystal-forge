@@ -33,7 +33,7 @@ public final class CrystalForgeRenderer {
         buildRoomShell(world, origin);
         buildPlatform(world, origin);
         renderSitesAndBonds(world, origin, payload);
-        renderGuideWall(world, origin, payload);
+        renderControlWall(world, origin, payload);
         renderWorkflowWall(world, origin, payload);
         renderObservablesWall(world, origin, payload);
         renderVqeChamber(world, origin, payload);
@@ -163,9 +163,11 @@ public final class CrystalForgeRenderer {
         }
     }
 
-    private static void renderGuideWall(ServerWorld world, BlockPos origin, JsonObject payload) {
+    private static void renderControlWall(ServerWorld world, BlockPos origin, JsonObject payload) {
         JsonObject problem = payload.getAsJsonObject("problem");
         String family = problem.get("model_family").getAsString();
+        JsonObject inputs = problem.getAsJsonObject("inputs");
+        JsonObject parameters = inputs.getAsJsonObject("parameters");
 
         int wallX = origin.getX() - 13;
         for (int y = origin.getY() + 2; y <= origin.getY() + 5; y++) {
@@ -177,20 +179,26 @@ public final class CrystalForgeRenderer {
         }
 
         Block familyBlock = "tfim".equals(family) ? Blocks.BLUE_CONCRETE : Blocks.PURPLE_CONCRETE;
-        for (int y = 0; y < 4; y++) {
-            setBlock(world, new BlockPos(wallX, origin.getY() + 2 + y, origin.getZ() - 4), Blocks.ORANGE_CONCRETE);
-            setBlock(world, new BlockPos(wallX, origin.getY() + 2 + y, origin.getZ() - 1), familyBlock);
-            setBlock(world, new BlockPos(wallX, origin.getY() + 2 + y, origin.getZ() + 2), Blocks.LIGHT_BLUE_CONCRETE);
-        }
+        setBlock(world, new BlockPos(wallX, origin.getY() + 2, origin.getZ() - 5), Blocks.BLUE_CONCRETE);
+        setBlock(world, new BlockPos(wallX, origin.getY() + 2, origin.getZ() - 3), Blocks.PURPLE_CONCRETE);
+        setBlock(world, new BlockPos(wallX, origin.getY() + 2, origin.getZ() + 5), Blocks.LIME_CONCRETE);
 
-        JsonObject inputs = problem.getAsJsonObject("inputs");
-        int parameterCount = inputs.getAsJsonObject("parameters").size();
-        int targetCount = inputs.getAsJsonArray("qprobe_targets").size();
-        for (int i = 0; i < Math.min(4, parameterCount); i++) {
-            setBlock(world, new BlockPos(wallX - 1, origin.getY() + 2 + i, origin.getZ() + 5), Blocks.GLOWSTONE);
-        }
-        for (int i = 0; i < Math.min(4, targetCount); i++) {
-            setBlock(world, new BlockPos(wallX + 1, origin.getY() + 2 + i, origin.getZ() + 5), Blocks.OCHRE_FROGLIGHT);
+        String[] keys = "hubbard".equals(family)
+            ? new String[]{"t", "U", "mu"}
+            : new String[]{"J", "h", "g"};
+        int[] rows = {-1, 1, 3};
+        for (int i = 0; i < keys.length; i++) {
+            String key = keys[i];
+            int rowZ = rows[i];
+            setBlock(world, new BlockPos(wallX, origin.getY() + 2, rowZ), Blocks.ORANGE_CONCRETE);
+            setBlock(world, new BlockPos(wallX, origin.getY() + 3, rowZ), familyBlock);
+            setBlock(world, new BlockPos(wallX, origin.getY() + 4, rowZ), Blocks.LIME_CONCRETE);
+
+            double value = parameters.has(key) ? parameters.get(key).getAsDouble() : 0.0;
+            int lights = Math.max(1, Math.min(4, (int) Math.ceil(Math.abs(value))));
+            for (int n = 0; n < lights; n++) {
+                setBlock(world, new BlockPos(wallX - 1 - n, origin.getY() + 3, rowZ), Blocks.GLOWSTONE);
+            }
         }
     }
 
