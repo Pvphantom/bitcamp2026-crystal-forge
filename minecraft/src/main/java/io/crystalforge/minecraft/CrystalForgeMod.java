@@ -41,7 +41,7 @@ public final class CrystalForgeMod implements ModInitializer {
             ServerPlayerEntity player = handler.getPlayer();
             player.sendMessage(Text.literal("Crystal Forge: initializing scene..."), false);
             CrystalForgeWorkflowRequest request = CrystalForgeSession.currentRequest();
-            Thread.ofVirtual().name("cf-init").start(() -> {
+            Thread initWorker = new Thread(() -> {
                 boolean ok = CrystalForgeBridge.refresh(request);
                 server.execute(() -> {
                     if (!ok) {
@@ -55,7 +55,9 @@ public final class CrystalForgeMod implements ModInitializer {
                     CrystalForgeBridge.renderLatestSummary(player.getCommandSource());
                     player.sendMessage(Text.literal("Crystal Forge: scene ready. Right-click the control wall to interact."), false);
                 });
-            });
+            }, "cf-init");
+            initWorker.setDaemon(true);
+            initWorker.start();
         });
     }
 
@@ -66,7 +68,7 @@ public final class CrystalForgeMod implements ModInitializer {
                     .then(CommandManager.literal("refresh")
                         .executes(context -> {
                             context.getSource().sendFeedback(() -> Text.literal("Crystal Forge: refreshing current workflow..."), false);
-                            Thread.ofVirtual().name("cf-cmd-refresh").start(() -> {
+                            Thread refreshWorker = new Thread(() -> {
                                 boolean ok = CrystalForgeBridge.refresh(CrystalForgeSession.currentRequest());
                                 context.getSource().getServer().execute(() -> {
                                     if (!ok) {
@@ -75,7 +77,9 @@ public final class CrystalForgeMod implements ModInitializer {
                                     }
                                     CrystalForgeBridge.renderLatestSummary(context.getSource());
                                 });
-                            });
+                            }, "cf-cmd-refresh");
+                            refreshWorker.setDaemon(true);
+                            refreshWorker.start();
                             return 1;
                         }))
                     .then(CommandManager.literal("preset")
@@ -89,7 +93,7 @@ public final class CrystalForgeMod implements ModInitializer {
                                 }
                                 context.getSource().sendFeedback(() -> Text.literal("Crystal Forge: fetching preset " + preset + "..."), false);
                                 CrystalForgeSession.setCurrentRequest(request);
-                                Thread.ofVirtual().name("cf-cmd-preset").start(() -> {
+                                Thread presetWorker = new Thread(() -> {
                                     boolean ok = CrystalForgeBridge.refresh(request);
                                     context.getSource().getServer().execute(() -> {
                                         if (!ok) {
@@ -98,7 +102,9 @@ public final class CrystalForgeMod implements ModInitializer {
                                         }
                                         CrystalForgeBridge.renderLatestSummary(context.getSource());
                                     });
-                                });
+                                }, "cf-cmd-preset");
+                                presetWorker.setDaemon(true);
+                                presetWorker.start();
                                 return 1;
                             })))
                     .then(CommandManager.literal("status")

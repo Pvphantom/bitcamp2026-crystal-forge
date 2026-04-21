@@ -51,7 +51,7 @@ public final class CrystalForgeControls {
     private static boolean refreshAndRenderAsync(ServerPlayerEntity player, String message) {
         player.sendMessage(Text.literal("Crystal Forge: " + message), false);
         CrystalForgeWorkflowRequest request = CrystalForgeSession.currentRequest();
-        Thread.ofVirtual().name("cf-refresh").start(() -> {
+        Thread worker = new Thread(() -> {
             boolean ok = CrystalForgeBridge.refresh(request);
             // Schedule the render back on the server thread
             player.getServer().execute(() -> {
@@ -65,7 +65,9 @@ public final class CrystalForgeControls {
                 CrystalForgeBridge.renderLatestSummary(player.getCommandSource());
                 player.sendMessage(Text.literal("Crystal Forge: updated."), false);
             });
-        });
+        }, "cf-refresh");
+        worker.setDaemon(true);
+        worker.start();
         return true;
     }
 

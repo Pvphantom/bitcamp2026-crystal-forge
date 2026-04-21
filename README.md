@@ -1,70 +1,122 @@
-# Crystal Forge
+# Crystal Forge — Bitcamp 2026 MCQuant Superconductor
 
-This repository is being rebuilt from the backup Schwinger demo into the Hubbard-model project described in the current Bitcamp spec.
+Crystal Forge is a **solver-routing and measurement-planning framework for strongly-correlated
+electron systems** (Fermi–Hubbard, TFIM) with a **Minecraft Fabric mod** as an interactive
+front end. A classical ML "CorrMap" classifier decides, per parameter regime, whether a
+cheap mean-field / tensor-network solver is trustworthy or whether the problem belongs in
+the *quantum frontier* that requires a VQE-style quantum treatment; a companion "QProbe"
+planner then picks which observables to measure to maximize information per shot.
 
-The architecture is now:
+The repo has three deployable pieces:
 
-- `backend/`: Python FastAPI service for Hubbard physics, observables, ML inference, and future Minecraft integration.
-- `frontend/`: React + Vite client for rapid iteration on controls and visualization.
-- `docs/`: specs and architecture notes.
+| Subproject  | Stack                                 | Purpose                                                   |
+|-------------|---------------------------------------|-----------------------------------------------------------|
+| `backend/`  | Python 3.11, FastAPI, PyTorch, Qiskit | Physics solvers, ML models, REST API, training scripts    |
+| `frontend/` | React 18, Vite                        | Dashboard for running workflows and inspecting results    |
+| `minecraft/`| Java 17, Fabric 1.20.4                | In-game 3D lattice visualization + interactive controls   |
 
-## Current Status
+See each subproject's README for details.
 
-The repo has been restructured, but the backend physics stack is still scaffolded rather than fully implemented. The old Schwinger frontend remains in `frontend/` temporarily until the Hubbard UI replaces it.
+---
 
-## Layout
+## Architecture at a glance
 
-```text
-.
-├── backend/
-│   ├── app/
-│   │   ├── api/
-│   │   ├── core/
-│   │   ├── domain/
-│   │   ├── ml/
-│   │   ├── physics/
-│   │   ├── services/
-│   │   └── main.py
-│   ├── scripts/
-│   ├── tests/
-│   └── pyproject.toml
-├── docs/
-│   ├── architecture.md
-│   └── specs/
-├── frontend/
-│   ├── src/
-│   ├── package.json
-│   └── vite.config.js
-└── README.md
+```
+                 ┌─────────────────────────────────────────┐
+                 │           Crystal Forge backend         │
+                 │        (FastAPI @ 127.0.0.1:8000)       │
+                 │                                         │
+  preset/params  │   physics/  →  solvers/  →  analysis/   │   JSON payload
+  ─────────────▶ │         ↘  ml/ (CorrMap, QProbe) ↙      │ ────────────────▶
+                 │                  ↓                      │   (scene +
+                 │            api/routes.py                │    observables)
+                 └─────────────────────────────────────────┘
+                         ▲                         │
+                         │                         │
+                  ┌──────┴──────┐          ┌───────▼────────┐
+                  │   React UI  │          │ Minecraft mod  │
+                  │ (frontend/) │          │ (minecraft/)   │
+                  └─────────────┘          └────────────────┘
 ```
 
-## Near-Term Build Order
+The backend is the single source of truth. Both UIs talk to the same REST endpoint
+(`POST /api/minecraft/workflow`) and receive a JSON payload containing a scene
+description (lattice geometry, colored blocks per site, routing verdict, observables).
 
-1. Implement `backend/app/physics/hamiltonian.py`.
-2. Add the 4 acceptance tests from the Hubbard spec.
-3. Add exact diagonalization and core observables.
-4. Expose them through FastAPI.
-5. Replace the current frontend with a Hubbard lattice/material editor.
-6. Add classifier training and inference after the physics core is trusted.
+---
 
-## Frontend
+## Quick start
+
+Clone and run all three layers locally.
+
+### 1. Backend
+
+```bash
+cd backend
+python -m venv .venv && source .venv/bin/activate
+pip install -e .
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Health check: `curl http://127.0.0.1:8000/health`.
+
+### 2. Frontend (optional — for dashboard)
 
 ```bash
 cd frontend
 npm install
-npm run dev
+npm run dev   # http://localhost:5173
 ```
 
-## Backend
+### 3. Minecraft mod
 
 ```bash
-cd backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-uvicorn app.main:app --reload
+cd minecraft
+./gradlew runClient
 ```
 
-## Minecraft Direction
+On first player join the mod auto-fetches the default TFIM preset from the backend
+and renders the lattice. Right-click the control wall to switch models or adjust
+parameters — the scene live-updates.
 
-The backend is the long-term product core. The browser UI and any future Minecraft visualization should both consume the same backend state/export schema rather than each embedding simulation logic.
+---
+
+## The science, briefly
+
+* **Problem.** Exact diagonalization of the 2D Fermi–Hubbard model scales as
+  `4^N`, so beyond ~14 sites it's intractable. Mean-field / DMFT / tensor-network
+  solvers are cheap but silently wrong in strongly-correlated regimes
+  (Mott, frustrated magnets, d-wave pairing). You can't know in advance which
+  regime you're in.
+* **CorrMap.** A binary MLP classifier trained on a 49-dim feature vector
+  (22 base physics features + 27 *intrinsic diagnostics* — mean-field stability,
+  sensitivity, size-consistency, ansatz disagreement, hysteresis).
+  Labels `classical_scalable` vs `quantum_frontier`. Trained on 2×2 + 4×4 + 6×6
+  regime samples; **held out on 8×8** — intrinsic features are behavioral, not
+  size-specific, so the classifier generalizes to lattice sizes it has never seen.
+* **QProbe.** An adaptive measurement planner that picks which observables
+  (charge / spin / transport / pairing channels) to commit shots to next, given
+  the current posterior.
+* **Minecraft bridge.** The live 3D visualization turns an otherwise opaque
+  solver decision into something a judge (or a collaborator) can *walk around
+  inside* and perturb with a click.
+
+For the full technical design, see `docs/` and the design document shared
+out-of-band.
+
+---
+
+## Repository layout
+
+```
+bitcamp2026-mcquant-superconductor/
+├── backend/      FastAPI service, solvers, ML models, training scripts
+├── frontend/     React + Vite dashboard
+├── minecraft/    Fabric 1.20.4 mod (Java 17)
+├── docs/         design notes and internal memos
+└── README.md     (this file)
+```
+
+## License
+
+Unlicensed hackathon project — contact the authors before reuse.
