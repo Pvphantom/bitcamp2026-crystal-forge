@@ -10,6 +10,7 @@ from app.domain.models import (
     MeasurementLibraryResponse,
     MeasurementPlanResponse,
     MetricsSummaryResponse,
+    MinecraftExportResponse,
     ObservablesResponse,
     PhasePredictionResponse,
     PlaceConfigurationRequest,
@@ -21,11 +22,13 @@ from app.domain.models import (
     TrustMetricsResponse,
 )
 from app.services.game_state import HubbardGameStateService
+from app.services.minecraft_export import MinecraftExportService
 from app.services.workflow import WorkflowService
 
 router = APIRouter()
 service = HubbardGameStateService()
 workflow_service = WorkflowService()
+minecraft_export_service = MinecraftExportService(workflow_service=workflow_service)
 
 
 @router.post("/state/create", response_model=ExportStateResponse)
@@ -116,3 +119,8 @@ def predict_qprobe_model(payload: QProbeRequest) -> QProbeModelPredictionRespons
 @router.post("/workflow/analyze", response_model=GenericAnalysisResponse)
 def analyze_workflow(payload: GenericProblemRequest) -> GenericAnalysisResponse:
     return workflow_service.analyze(payload)
+
+
+@router.post("/minecraft/workflow", response_model=MinecraftExportResponse)
+def export_minecraft_workflow(payload: GenericProblemRequest) -> MinecraftExportResponse:
+    return minecraft_export_service.export(payload)

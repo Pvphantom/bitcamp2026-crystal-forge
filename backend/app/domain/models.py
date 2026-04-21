@@ -347,3 +347,157 @@ class GenericAnalysisResponse(BaseModel):
     measurement_library: MeasurementLibraryResponse
     qprobe_exact: MeasurementPlanResponse | None = None
     qprobe_adaptive: AdaptiveMeasurementPlanResponse | None = None
+
+
+class MinecraftSceneResponse(BaseModel):
+    world_mode: str
+    layout: str
+    origin: dict[str, int]
+
+
+class MinecraftProblemInputsResponse(BaseModel):
+    parameters: dict[str, float]
+    qprobe_targets: list[str] = Field(default_factory=list)
+    qprobe_tolerance: float
+    qprobe_shots_per_group: int
+    qprobe_readout_flip_prob: float
+    qprobe_seed: int | None = None
+
+
+class MinecraftProblemResponse(BaseModel):
+    model_family: str
+    lattice: dict[str, int]
+    inputs: MinecraftProblemInputsResponse
+
+
+class MinecraftRoutingResponse(BaseModel):
+    available: bool
+    route_label: str | None = None
+    confidence: float | None = None
+    recommended_action: str | None = None
+    abstained: bool = False
+    abstain_reason: str | None = None
+    candidate_scores: dict[str, float] = Field(default_factory=dict)
+    intrinsic_label: str | None = None
+    intrinsic_score: float | None = None
+    intrinsic_reasons: list[str] = Field(default_factory=list)
+
+
+class MinecraftWorkflowResponse(BaseModel):
+    decision_source: str
+    active_path_type: str
+    selected_cheap_solver: str
+    selected_strong_solver: str | None = None
+    active_solver: str
+    escalation_triggered: bool
+    measurement_mode: str
+    route_label: str | None = None
+    recommendation: str
+
+
+class MinecraftRegimeResponse(BaseModel):
+    available: bool
+    label: str | None = None
+    confidence: float | None = None
+    probabilities: dict[str, float] = Field(default_factory=dict)
+
+
+class MinecraftSiteRenderResponse(BaseModel):
+    primary_key: str
+    primary_magnitude: float
+    primary_sign: int
+    secondary_key: str | None = None
+    secondary_magnitude: float | None = None
+    occupancy_label: str | None = None
+
+
+class MinecraftSiteValueResponse(BaseModel):
+    site_id: int
+    lattice_x: int
+    lattice_y: int
+    values: dict[str, float]
+    render: MinecraftSiteRenderResponse
+
+
+class MinecraftBondRenderResponse(BaseModel):
+    magnitude: float
+    sign: int
+
+
+class MinecraftBondValueResponse(BaseModel):
+    i: int
+    j: int
+    kind: str
+    value: float
+    render: MinecraftBondRenderResponse
+
+
+class MinecraftObservablesResponse(BaseModel):
+    global_: dict[str, float] = Field(alias="global")
+    site_values: list[MinecraftSiteValueResponse] = Field(default_factory=list)
+    bond_values: list[MinecraftBondValueResponse] = Field(default_factory=list)
+
+    model_config = {"populate_by_name": True}
+
+
+class MinecraftTrustResponse(BaseModel):
+    risk_label: str
+    recommended_action: str
+    max_abs_error: float
+    energy_error: float
+    abs_error: dict[str, float]
+    rel_error: dict[str, float]
+
+
+class MinecraftSolverSummaryResponse(BaseModel):
+    available: bool = True
+    solver_name: str | None = None
+    energy: float | None = None
+    observables: dict[str, float] = Field(default_factory=dict)
+    site_observables: dict[str, list[float]] = Field(default_factory=dict)
+    bond_observables: dict[str, float] = Field(default_factory=dict)
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class MinecraftSolversResponse(BaseModel):
+    cheap_solver: MinecraftSolverSummaryResponse
+    exact_solver: MinecraftSolverSummaryResponse
+    strong_solver: MinecraftSolverSummaryResponse
+
+
+class MinecraftMeasurementResponse(BaseModel):
+    enabled: bool
+    planning_state_solver: str | None = None
+    oracle_reference_solver: str | None = None
+    qprobe: MeasurementPlanResponse | None = None
+    adaptive_qprobe: AdaptiveMeasurementPlanResponse | None = Field(default=None, alias="adaptive_qprobe")
+
+    model_config = {"populate_by_name": True}
+
+
+class MinecraftVisualizationHintsResponse(BaseModel):
+    site_primary_key: str
+    site_secondary_key: str | None = None
+    bond_primary_key: str
+    show_regime_panel: bool
+    show_quantum_chamber: bool
+    show_qprobe_ring: bool
+    animate_site_updates: bool
+    animate_bond_updates: bool
+    animate_adaptive_steps: bool
+
+
+class MinecraftExportResponse(BaseModel):
+    schema_version: str
+    timestamp: str
+    update_id: int
+    scene: MinecraftSceneResponse
+    problem: MinecraftProblemResponse
+    routing: MinecraftRoutingResponse
+    workflow: MinecraftWorkflowResponse
+    regime: MinecraftRegimeResponse
+    observables: MinecraftObservablesResponse
+    trust: MinecraftTrustResponse
+    solvers: MinecraftSolversResponse
+    measurement: MinecraftMeasurementResponse
+    visualization_hints: MinecraftVisualizationHintsResponse

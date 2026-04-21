@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "crystalforge",
+  "version": "${version}",
+  "name": "Crystal Forge Minecraft Bridge",
+  "description": "Fabric bridge for Crystal Forge workflow visualizations in Minecraft.",
+  "authors": [
+    "OpenAI Codex",
+    "Bitcamp 2026 Crystal Forge Team"
+  ],
+  "contact": {},
+  "license": "All-Rights-Reserved",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "io.crystalforge.minecraft.CrystalForgeMod"
+    ],
+    "client": [
+      "io.crystalforge.minecraft.CrystalForgeClientMod"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.15.11",
+    "minecraft": "~1.20.4",
+    "java": ">=17",
+    "fabric-api": "*"
+  }
+}
